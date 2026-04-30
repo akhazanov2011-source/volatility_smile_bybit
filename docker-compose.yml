@@ -1,0 +1,9 @@
+version: "3.3"
+
+services:
+  web:
+    build: .
+    container_name: volatility-smile-bybit
+    restart: always
+    ports:
+      - "8000:8000"
