@@ -1,0 +1,167 @@
+"""
+Интеграционные тесты app.py: проверяют, что item-словари содержат все новые
+ключи греков, метрики нормализуются корректно, ставка валидируется, а на моках
+тикеров данные подготавливаются без обращения к сети.
+
+Сетевой слой (get_tickers, _build_chart_entry) мокается/не вызывается.
+Фоновый воркер не запускается, т.к. pytest импортирует app, а функция
+_ensure_worker_started() в маршруте не вызывается напрямую в этих тестах.
+"""
+
+import sys
+import os
+from datetime import datetime, timedelta
+
+# Добавляем корень проекта в sys.path, чтобы можно было импортировать app и bs_greeks
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import app
+
+
+# --------------------------------------------------------------------------------------
+# normalize_metric / normalize_rate
+# --------------------------------------------------------------------------------------
+
+def test_normalize_metric_accepts_new_greeks():
+    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima"):
+        assert app.normalize_metric(key) == key
+
+
+def test_normalize_metric_keeps_existing():
+    for key in ("iv", "theta", "theta_pct"):
+        assert app.normalize_metric(key) == key
+
+
+def test_normalize_metric_rejects_unknown():
+    assert app.normalize_metric("nonexistent") == app.DEFAULT_METRIC
+    assert app.normalize_metric(None) == app.DEFAULT_METRIC
+    assert app.normalize_metric("") == app.DEFAULT_METRIC
+
+
+def test_normalize_rate_default():
+    assert app.normalize_rate(None) == 0.0
+    assert app.normalize_rate("") == 0.0
+    assert app.normalize_rate("garbage") == 0.0
+
+
+def test_normalize_rate_parses_float():
+    assert app.normalize_rate("0.045") == 0.045
+    assert app.normalize_rate("0.1") == 0.1
+
+
+def test_normalize_rate_clamps_to_range():
+    assert app.normalize_rate("-0.5") == app.RATE_MIN
+    assert app.normalize_rate("2.0") == app.RATE_MAX
+    assert app.normalize_rate("1.5") == app.RATE_MAX
+
+
+# --------------------------------------------------------------------------------------
+# SUPPORTED_METRICS — все метрики имеют обязательные поля
+# --------------------------------------------------------------------------------------
+
+def test_all_metrics_have_required_fields():
+    required = {"label", "axis_title", "value_key", "source", "description"}
+    for key, cfg in app.SUPPORTED_METRICS.items():
+        assert required.issubset(cfg.keys()), f"Метрика {key} не имеет полей: {required - set(cfg.keys())}"
+        assert cfg["value_key"] == key, f"value_key должен совпадать с ключом для {key}"
+        assert cfg["source"] in ("api", "bs", "derived"), f"Неизвестный source для {key}"
+
+
+def test_expected_metric_keys_present():
+    expected = {"iv", "theta", "theta_pct", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima"}
+    assert expected == set(app.SUPPORTED_METRICS.keys())
+
+
+# --------------------------------------------------------------------------------------
+# fetch_and_prepare_data — на моках тикеров
+# --------------------------------------------------------------------------------------
+
+def _make_ticker(symbol, mark_iv="0.6", mark_price="1000", delta="0.55",
+                 gamma="0.00002", theta="-5.0", vega="20.0", index_price="60000"):
+    return {
+        "symbol": symbol,
+        "markIv": mark_iv,
+        "markPrice": mark_price,
+        "delta": delta,
+        "gamma": gamma,
+        "theta": theta,
+        "vega": vega,
+        "indexPrice": index_price,
+    }
+
+
+def _make_mock_tickers():
+    """Один Call + один Put на страйке 60000, экспирация через ~90 дней."""
+    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
+    return [
+        _make_ticker(f"BTC-{future}-60000-C-USDT"),
+        _make_ticker(f"BTC-{future}-60000-P-USDT"),
+    ]
+
+
+def test_fetch_and_prepare_data_returns_higher_greeks():
+    tickers = _make_mock_tickers()
+    spot = 60000.0
+    _, by_expiry, sorted_expiries = app.fetch_and_prepare_data(
+        "BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.0
+    )
+    assert len(sorted_expiries) == 1
+    expiry = sorted_expiries[0]
+    for opt_type in ("Call", "Put"):
+        items = by_expiry[expiry][opt_type]
+        assert len(items) == 1
+        item = items[0]
+        # Базовые ключи (из API)
+        assert item["delta"] == "0.55"
+        assert item["vega"] == "20.0"
+        assert item["gamma"] == "0.00002"
+        # Новые высшие греки — должны присутствовать (float или None)
+        for key in ("vanna", "volga", "speed", "charm", "ultima"):
+            assert key in item, f"Ключ {key} отсутствует в item"
+            # При T > 0, σ > 0, S > 0 — должны быть числом, не None
+            assert item[key] is not None, f"{key} не должен быть None для валидного опциона"
+
+
+def test_fetch_and_prepare_data_higher_greeks_change_with_rate():
+    """Высшие греки (кроме Charm при T→0) должны зависеть от безрисковой ставки."""
+    tickers = _make_mock_tickers()
+    spot = 60000.0
+    _, by1, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.0)
+    _, by2, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.1)
+
+    expiry = list(by1.keys())[0]
+    item_r0 = by1[expiry]["Call"][0]
+    item_r1 = by2[expiry]["Call"][0]
+
+    # Vanna/Charm чувствительны к r через d2; проверяем, что расчёт действительно
+    # использует ставку (значения должны различаться при заметной разнице r).
+    assert item_r0["charm"] != item_r1["charm"], "Charm должен зависеть от ставки r"
+
+
+def test_fetch_and_prepare_data_default_rate_works():
+    """Без явной передачи rate используется DEFAULT_RATE и не падает."""
+    tickers = _make_mock_tickers()
+    spot = 60000.0
+    _, by_expiry, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot)
+    expiry = list(by_expiry.keys())[0]
+    assert by_expiry[expiry]["Call"] and by_expiry[expiry]["Put"]
+
+
+# --------------------------------------------------------------------------------------
+# Кеш по 3-туплю (без сети) — через mock refresh_combo
+# --------------------------------------------------------------------------------------
+
+def test_cache_keyed_by_rate(monkeypatch):
+    """_cache_get/_cache_set должны различать записи по ставке."""
+    monkeypatch.setattr(app, "get_tickers", lambda base_coin: _make_mock_tickers())
+    monkeypatch.setattr(app, "get_spot_price", lambda tickers: 60000.0)
+
+    entry_a = app._cache_get("BTC", "iv", 0.0)
+    entry_b = app._cache_get("BTC", "iv", 0.05)
+    # До заполнения обе None
+    assert entry_a is None and entry_b is None
+
+    # Заполняем одну — вторая остаётся None
+    app._cache_set("BTC", "iv", 0.0, {"status": "live", "updated_at": 0.0})
+    assert app._cache_get("BTC", "iv", 0.0) is not None
+    assert app._cache_get("BTC", "iv", 0.05) is None
