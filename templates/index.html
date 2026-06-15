@@ -322,6 +322,58 @@
             line-height: 1.55;
         }
 
+        .cache-bar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            border-bottom: 1px solid #eceef2;
+            background: var(--surface-muted);
+            font-size: 0.86rem;
+            color: var(--muted);
+        }
+
+        .cache-bar .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            display: inline-block;
+        }
+
+        .cache-bar .dot.error {
+            background: var(--danger-text);
+        }
+
+        .cache-bar .dot.warm {
+            background: #f0a500;
+        }
+
+        .preloader {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            padding: 56px 20px;
+            color: var(--muted);
+            text-align: center;
+        }
+
+        .spinner {
+            width: 34px;
+            height: 34px;
+            border: 3px solid #e4e6eb;
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         @media (max-width: 960px) {
             .hero {
                 grid-template-columns: 1fr;
@@ -461,11 +513,30 @@
             </div>
             {% endif %}
 
+            <div class="cache-bar">
+                <span class="dot {% if cache_status == 'error' %}error{% elif cache_status == 'warming' %}warm{% endif %}"></span>
+                <span>
+                    {% if cache_status == 'error' %}
+                        Кеш: ошибка последнего обновления
+                    {% elif cache_status == 'warming' %}
+                        Кеш: прогревается, показан снимок
+                    {% else %}
+                        Кеш обновлён в {{ cache_updated_str }}
+                    {% endif %}
+                </span>
+                <span style="margin-left:auto; opacity:0.8;">Фоновое обновление каждые 3 мин</span>
+            </div>
+
             {% if error %}
             <div class="error">{{ error }}</div>
             {% elif chart_html %}
             <div class="chart-wrap">
                 <div class="chart-card">{{ chart_html|safe }}</div>
+            </div>
+            {% else %}
+            <div class="preloader">
+                <div class="spinner"></div>
+                <div>Загружаем данные с Bybit…</div>
             </div>
             {% endif %}
 

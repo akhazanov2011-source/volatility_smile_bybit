@@ -4,4 +4,9 @@ __pycache__/
 *.pyd
 .Python
 .pytest_cache/
-*.html
+.git
+.gitignore
+.env
+*.md
+Dockerfile
+docker-compose.yml

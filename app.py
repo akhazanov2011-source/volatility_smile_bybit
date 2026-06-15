@@ -10,7 +10,6 @@ from datetime import datetime
 import plotly.graph_objects as go
 import requests
 from flask import Flask, render_template, request
-from apscheduler.schedulers.background import BackgroundScheduler
 
 BASE_URL = "https://api.bybit.com"
 REQUEST_TIMEOUT = 10
@@ -18,6 +17,9 @@ CACHE_TTL_SECONDS = 60
 REQUEST_MAX_ATTEMPTS = 4
 REQUEST_BACKOFF_BASE_SECONDS = 0.6
 REQUEST_BACKOFF_MAX_SECONDS = 6.0
+
+# Фоновое кеширование: как часто воркер полностью обновляет все (coin, metric).
+CACHE_REFRESH_INTERVAL_SECONDS = 180
 
 COIN_ALIASES = {
     "BTC": {"api_base_coin": "BTC", "symbol_prefixes": {"BTC", "BTCUSDT"}},
@@ -54,76 +56,18 @@ SUPPORTED_METRICS = {
 }
 DEFAULT_METRIC = "iv"
 
-app = Flask(__name__)
-scheduler = BackgroundScheduler()
-cache = {}
-
-@app.before_first_request
-def init_scheduler():
-    scheduler.add_job(fetch_data, 'interval', minutes=3)
-    scheduler.start()
-
-def fetch_data():
-    # Получаем данные с Bybit API
-    try:
-        base_coin = DEFAULT_COIN
-        tickers = get_tickers(base_coin)
-        spot_price = get_spot_price(tickers)
-        if spot_price is None:
-            raise ValueError("Не удалось определить spot цену для выбранной монеты.")
-        
-        strikes = collect_strikes(tickers, base_coin)
-        min_strike, max_strike, displayed_strikes = get_strike_window(strikes, spot_price)
-        _, by_expiry, sorted_expiries = fetch_and_prepare_data(
-            base_coin, tickers, min_strike, max_strike, spot_price
-        )
-        
-        if not by_expiry:
-            raise ValueError("Нет данных для построения графика в выбранном диапазоне.")
-        
-        fig = build_figure(
-            base_coin,
-            spot_price,
-            by_expiry,
-            sorted_expiries,
-            min_strike,
-            max_strike,
-            DEFAULT_METRIC
-        )
-        fig.update_layout(width=None, height=720, margin=dict(l=50, r=50, t=100, b=50))
-        chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn")
-        
-        cache['volatility_data'] = {
-            'timestamp': time.time(),
-            'data': chart_html
-        }
-        print("Данные успешно кешированы")
-    except Exception as exc:
-        logger.exception(
-            "Unhandled error while fetching data: %s",
-            exc
-        )
-        cache['volatility_data'] = {
-            'timestamp': time.time(),
-            'data': 'Ошибка загрузки данных. Попробуйте обновить страницу.'
-        }
-        print("Ошибка загрузки данных")
-
-@app.route('/')
-def index():
-    if 'volatility_data' in cache:
-        return f"Последние данные: {cache['volatility_data']['data']}"
-    return "Данные не найдены в кэше"
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("volatility_smile_bybit")
 
-_tickers_cache = {}
-_tickers_cache_lock = threading.Lock()
+app = Flask(__name__)
 
+
+# --------------------------------------------------------------------------------------
+# Сетевой слой
+# --------------------------------------------------------------------------------------
 
 def _requests_get_with_retry(url, *, params, timeout):
     last_exc = None
@@ -152,6 +96,10 @@ def _requests_get_with_retry(url, *, params, timeout):
             time.sleep(sleep_for)
     raise last_exc
 
+
+# --------------------------------------------------------------------------------------
+# Доменная логика
+# --------------------------------------------------------------------------------------
 
 def parse_symbol(symbol):
     parts = symbol.split("-")
@@ -189,6 +137,10 @@ def parse_symbol(symbol):
 
 def get_coin_config(selected_coin):
     return COIN_ALIASES[selected_coin]
+
+
+_tickers_cache = {}
+_tickers_cache_lock = threading.Lock()
 
 
 def get_tickers(base_coin):
@@ -517,27 +469,40 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     )
 
 
-@app.get("/healthz")
-def healthcheck():
-    return {"status": "ok"}
+# --------------------------------------------------------------------------------------
+# Фоновое кеширование
+# --------------------------------------------------------------------------------------
+#
+# Воркер-демон раз в CACHE_REFRESH_INTERVAL_SECONDS обновляет отрендеренный график
+# (chart_html + сводная статистика) для каждой пары (coin, metric) и кладёт в _cache.
+# Маршрут index() читает кеш; при холодном старте/промахе делает синхронный refresh
+# именно этой пары. Сетевой слой get_tickers имеет собственный TTL-кеш (60 с), поэтому
+# фоновый проход делает по одному сетевому запросу на монету, а не на метрику.
+
+_cache = {}
+_cache_lock = threading.Lock()
+
+_worker_started = False
+_worker_start_lock = threading.Lock()
 
 
-@app.get("/")
-def index():
-    selected_coin = request.args.get("coin", DEFAULT_COIN).upper()
-    if selected_coin not in SUPPORTED_COINS:
-        selected_coin = DEFAULT_COIN
-    selected_metric = normalize_metric(request.args.get("metric"))
+def _all_combos():
+    return [(coin, metric) for coin in SUPPORTED_COINS for metric in SUPPORTED_METRICS]
 
-    chart_html = None
-    error = None
-    spot_price = None
-    expiries_count = 0
-    min_strike = None
-    max_strike = None
-    displayed_strikes = 0
-    total_strikes = 0
 
+def _cache_get(coin, metric):
+    with _cache_lock:
+        entry = _cache.get((coin, metric))
+        return dict(entry) if entry is not None else None
+
+
+def _cache_set(coin, metric, entry):
+    with _cache_lock:
+        _cache[(coin, metric)] = entry
+
+
+def _build_chart_entry(selected_coin, selected_metric):
+    """Сетевой запрос + рендер. Никогда не бросает исключение наружу."""
     try:
         api_base_coin = get_coin_config(selected_coin)["api_base_coin"]
         tickers = get_tickers(api_base_coin)
@@ -566,14 +531,108 @@ def index():
         )
         fig.update_layout(width=None, height=720, margin=dict(l=50, r=50, t=100, b=50))
         chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn")
+
+        return {
+            "chart_html": chart_html,
+            "error": None,
+            "spot_price": spot_price,
+            "expiries_count": expiries_count,
+            "min_strike": min_strike,
+            "max_strike": max_strike,
+            "displayed_strikes": displayed_strikes,
+            "total_strikes": total_strikes,
+            "updated_at": time.time(),
+            "status": "live",
+        }
     except Exception as exc:
         logger.exception(
-            "Unhandled error while rendering index (coin=%s metric=%s): %s",
+            "Error building chart (coin=%s metric=%s): %s",
             selected_coin,
             selected_metric,
             exc,
         )
-        error = "Не удалось загрузить данные Bybit. Попробуйте обновить страницу через минуту."
+        return {
+            "chart_html": None,
+            "error": "Не удалось загрузить данные Bybit. Попробуйте обновить страницу через минуту.",
+            "spot_price": None,
+            "expiries_count": 0,
+            "min_strike": None,
+            "max_strike": None,
+            "displayed_strikes": 0,
+            "total_strikes": 0,
+            "updated_at": time.time(),
+            "status": "error",
+        }
+
+
+def refresh_combo(selected_coin, selected_metric):
+    """Собирает график для пары и кладёт в кеш. Возвращает запись кеша."""
+    entry = _build_chart_entry(selected_coin, selected_metric)
+    _cache_set(selected_coin, selected_metric, entry)
+    return entry
+
+
+def _background_worker_loop():
+    while True:
+        for coin, metric in _all_combos():
+            try:
+                refresh_combo(coin, metric)
+            except Exception:
+                logger.exception(
+                    "Background refresh unexpectedly failed for %s/%s", coin, metric
+                )
+        time.sleep(CACHE_REFRESH_INTERVAL_SECONDS)
+
+
+def _ensure_worker_started():
+    """Запускает фоновый воркер кеша ровно один раз на процесс."""
+    global _worker_started
+    with _worker_start_lock:
+        if _worker_started:
+            return
+        thread = threading.Thread(
+            target=_background_worker_loop,
+            name="volatility-cache-worker",
+            daemon=True,
+        )
+        thread.start()
+        _worker_started = True
+        logger.info(
+            "Background cache worker started (interval=%ss, combos=%s)",
+            CACHE_REFRESH_INTERVAL_SECONDS,
+            len(_all_combos()),
+        )
+
+
+# --------------------------------------------------------------------------------------
+# Маршруты
+# --------------------------------------------------------------------------------------
+
+@app.get("/healthz")
+def healthcheck():
+    return {"status": "ok"}
+
+
+@app.get("/")
+def index():
+    selected_coin = request.args.get("coin", DEFAULT_COIN).upper()
+    if selected_coin not in SUPPORTED_COINS:
+        selected_coin = DEFAULT_COIN
+    selected_metric = normalize_metric(request.args.get("metric"))
+
+    _ensure_worker_started()
+
+    entry = _cache_get(selected_coin, selected_metric)
+    if entry is None:
+        # Холодный старт / промах кеша — синхронно обновляем именно эту пару.
+        entry = refresh_combo(selected_coin, selected_metric)
+
+    updated_at = entry.get("updated_at")
+    updated_str = (
+        datetime.fromtimestamp(updated_at).strftime("%H:%M:%S")
+        if updated_at
+        else "—"
+    )
 
     return render_template(
         "index.html",
@@ -581,15 +640,23 @@ def index():
         selected_coin=selected_coin,
         metrics=SUPPORTED_METRICS,
         selected_metric=selected_metric,
-        chart_html=chart_html,
-        error=error,
-        spot_price=spot_price,
-        expiries_count=expiries_count,
-        min_strike=min_strike,
-        max_strike=max_strike,
-        displayed_strikes=displayed_strikes,
-        total_strikes=total_strikes,
+        chart_html=entry.get("chart_html"),
+        error=entry.get("error"),
+        spot_price=entry.get("spot_price"),
+        expiries_count=entry.get("expiries_count"),
+        min_strike=entry.get("min_strike"),
+        max_strike=entry.get("max_strike"),
+        displayed_strikes=entry.get("displayed_strikes"),
+        total_strikes=entry.get("total_strikes"),
+        cache_updated_str=updated_str,
+        cache_status=entry.get("status"),
     )
+
+
+# Запускаем воркер при импорте модуля, чтобы кеш прогревался даже до первого запроса
+# (работает и под gunicorn, и под flask run). Демон-поток не блокирует завершение
+# процесса и стартует ровно один раз за счёт _ensure_worker_started().
+_ensure_worker_started()
 
 
 if __name__ == "__main__":
