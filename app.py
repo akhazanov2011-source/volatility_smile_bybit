@@ -10,6 +10,7 @@ from datetime import datetime
 import plotly.graph_objects as go
 import requests
 from flask import Flask, render_template, request
+from apscheduler.schedulers.background import BackgroundScheduler
 
 BASE_URL = "https://api.bybit.com"
 REQUEST_TIMEOUT = 10
@@ -54,6 +55,65 @@ SUPPORTED_METRICS = {
 DEFAULT_METRIC = "iv"
 
 app = Flask(__name__)
+scheduler = BackgroundScheduler()
+cache = {}
+
+@app.before_first_request
+def init_scheduler():
+    scheduler.add_job(fetch_data, 'interval', minutes=3)
+    scheduler.start()
+
+def fetch_data():
+    # Получаем данные с Bybit API
+    try:
+        base_coin = DEFAULT_COIN
+        tickers = get_tickers(base_coin)
+        spot_price = get_spot_price(tickers)
+        if spot_price is None:
+            raise ValueError("Не удалось определить spot цену для выбранной монеты.")
+        
+        strikes = collect_strikes(tickers, base_coin)
+        min_strike, max_strike, displayed_strikes = get_strike_window(strikes, spot_price)
+        _, by_expiry, sorted_expiries = fetch_and_prepare_data(
+            base_coin, tickers, min_strike, max_strike, spot_price
+        )
+        
+        if not by_expiry:
+            raise ValueError("Нет данных для построения графика в выбранном диапазоне.")
+        
+        fig = build_figure(
+            base_coin,
+            spot_price,
+            by_expiry,
+            sorted_expiries,
+            min_strike,
+            max_strike,
+            DEFAULT_METRIC
+        )
+        fig.update_layout(width=None, height=720, margin=dict(l=50, r=50, t=100, b=50))
+        chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn")
+        
+        cache['volatility_data'] = {
+            'timestamp': time.time(),
+            'data': chart_html
+        }
+        print("Данные успешно кешированы")
+    except Exception as exc:
+        logger.exception(
+            "Unhandled error while fetching data: %s",
+            exc
+        )
+        cache['volatility_data'] = {
+            'timestamp': time.time(),
+            'data': 'Ошибка загрузки данных. Попробуйте обновить страницу.'
+        }
+        print("Ошибка загрузки данных")
+
+@app.route('/')
+def index():
+    if 'volatility_data' in cache:
+        return f"Последние данные: {cache['volatility_data']['data']}"
+    return "Данные не найдены в кэше"
 
 logging.basicConfig(
     level=logging.INFO,
