@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 import requests
 from flask import Flask, render_template, request
 
+import bs_greeks
+
 BASE_URL = "https://api.bybit.com"
 REQUEST_TIMEOUT = 10
 CACHE_TTL_SECONDS = 60
@@ -37,21 +39,131 @@ MONTH_MAP = {
 
 DEFAULT_COIN = "BTC"
 STRIKE_COVERAGE_RATIO = 0.7
+
+# Безрисковая ставка по умолчанию (крипто-конвенция: r = 0). Пользователь может
+# задать свою через query-param ?rate=, значение валидируется и клампится в [0, 1].
+DEFAULT_RATE = 0.0
+RATE_MIN = 0.0
+RATE_MAX = 1.0
+
+# Метрики, доступные в выпадающем списке. ``source`` указывает происхождение
+# значения для справочника: ``api`` — берётся из ответа Bybit, ``bs`` — считается
+# локально по модели Блэка — Шоулза (греки высшего порядка API не отдаются).
 SUPPORTED_METRICS = {
     "iv": {
         "label": "Implied Volatility",
         "axis_title": "Implied Volatility (%)",
         "value_key": "iv",
+        "source": "api",
+        "description": (
+            "Подразумеваемая волатильность (поле markIv из API Bybit). Рыночная "
+            "оценка ожидаемого разброса цены базового актива до экспирации. "
+            "Основа «улыбки волатильности»: чем выше IV, тем дороже опцион."
+        ),
     },
     "theta": {
         "label": "Theta",
         "axis_title": "Theta",
         "value_key": "theta",
+        "source": "api",
+        "description": (
+            "Тета — скорость временного распада стоимости опциона (∂P/∂t). "
+            "Берётся из API Bybit. Обычно отрицательна для длинной позиции: "
+            "с каждым днём опцион теряет премию по мере приближения экспирации."
+        ),
     },
     "theta_pct": {
         "label": "Theta / Mark Price",
         "axis_title": "Theta / Mark Price (%)",
         "value_key": "theta_pct",
+        "source": "derived",
+        "description": (
+            "Тета, нормированная на mark price опциона (считается локально как "
+            "theta / markPrice × 100). Показывает дневной распад в процентах от "
+            "стоимости опциона — удобная метрика для сравнения опционов разной цены."
+        ),
+    },
+    "delta": {
+        "label": "Delta",
+        "axis_title": "Delta",
+        "value_key": "delta",
+        "source": "api",
+        "description": (
+            "Дельта (∂P/∂S) — изменение цены опциона при изменении цены базового "
+            "актива на единицу. Для Call принимает значения 0…1, для Put −1…0. "
+            "Берётся из API Bybit. Также интерпретируется как вероятность экспирации ITM."
+        ),
+    },
+    "vega": {
+        "label": "Vega",
+        "axis_title": "Vega",
+        "value_key": "vega",
+        "source": "api",
+        "description": (
+            "Вега (∂P/∂σ) — изменение цены опциона при росте волатильности на 1 "
+            "пункт (1 доля единицы). Показывает чувствительность к IV. Берётся из "
+            "API Bybit. Vega всегда положительна для длинной позиции в опционе."
+        ),
+    },
+    "vanna": {
+        "label": "Vanna",
+        "axis_title": "Vanna",
+        "value_key": "vanna",
+        "source": "bs",
+        "description": (
+            "Ванна (∂Delta/∂σ = ∂Vega/∂S) — грек второго порядка: скорость "
+            "изменения дельты при росте волатильности. Характеризует «перекос» "
+            "(skew) волатильности. Считается локально по модели Блэка — Шоулза, "
+            "т.к. Bybit API этот грек не отдаёт."
+        ),
+    },
+    "volga": {
+        "label": "Volga / Vomma",
+        "axis_title": "Volga (Vomma)",
+        "value_key": "volga",
+        "source": "bs",
+        "description": (
+            "Волга / Вомма (∂²P/∂σ²) — вторая производная цены по волатильности, "
+            "«выпуклость по веге». Положительная волга означает, что опцион "
+            "выигрывает от роста волатильности сильнее, чем предсказывает линейная "
+            "вега. Считается локально по модели Блэка — Шоулза."
+        ),
+    },
+    "speed": {
+        "label": "Speed",
+        "axis_title": "Speed",
+        "value_key": "speed",
+        "source": "bs",
+        "description": (
+            "Спид (∂Gamma/∂S) — грек третьего порядка: скорость изменения гаммы "
+            "при движении цены базового актива. Важен для динамического "
+            "хеджирования крупных позиций. Считается локально по модели "
+            "Блэка — Шоулза. Величины очень малые — ось масштабируется автоматически."
+        ),
+    },
+    "charm": {
+        "label": "Charm",
+        "axis_title": "Charm",
+        "value_key": "charm",
+        "source": "bs",
+        "description": (
+            "Чарм (∂Delta/∂t) — скорость изменения дельты по мере течения времени "
+            "(дрейф дельты). Помогает понять, как часто нужно ребалансировать "
+            "дельта-хедж. Считается локально по модели Блэка — Шоулза. "
+            "При q = 0 одинаков для Call и Put."
+        ),
+    },
+    "ultima": {
+        "label": "Ultima",
+        "axis_title": "Ultima",
+        "value_key": "ultima",
+        "source": "bs",
+        "description": (
+            "Ультима (∂Vomma/∂σ = ∂³P/∂σ³) — грек третьего порядка по "
+            "волатильности. Характеризует стабильность волги при изменениях IV. "
+            "Считается локально по модели Блэка — Шоулза. Полезна при торговле "
+            "весьма далёкими от денег опционами (wing options)."
+        ),
     },
 }
 DEFAULT_METRIC = "iv"
@@ -210,6 +322,17 @@ def normalize_metric(value):
     return metric
 
 
+def normalize_rate(value):
+    """Парсит и клампит безрисковую ставку из query-param. Возвращает float в [RATE_MIN, RATE_MAX]."""
+    if value is None or value == "":
+        return DEFAULT_RATE
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_RATE
+    return max(RATE_MIN, min(RATE_MAX, rate))
+
+
 def calculate_theta_pct(theta_value, mark_price_value):
     theta_numeric = parse_numeric(theta_value)
     mark_price_numeric = parse_numeric(mark_price_value)
@@ -241,8 +364,9 @@ def get_strike_window(strikes, spot_price):
     return min(nearest_strikes), max(nearest_strikes), target_count
 
 
-def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_price):
+def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_price, risk_free_rate=DEFAULT_RATE):
     raw_by_expiry = {}
+    now_dt = datetime.now()
 
     for ticker in tickers:
         symbol = ticker["symbol"]
@@ -264,6 +388,19 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
         mark_price = ticker.get("markPrice", "N/A")
         theta = ticker.get("theta", "N/A")
 
+        # Время до экспирации в годах и волатильность в долях единицы — для локального
+        # расчёта высших греков по модели Блэка — Шоулза.
+        seconds_to_expiry = (expiry - now_dt).total_seconds()
+        time_to_expiry = seconds_to_expiry / bs_greeks.SECONDS_PER_YEAR if seconds_to_expiry > 0 else 0.0
+        sigma = iv / 100.0
+
+        # Высшие греки (Bybit API их не отдаёт). При вырожденных входах получим None.
+        vanna_val = bs_greeks.vanna(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
+        volga_val = bs_greeks.volga(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
+        speed_val = bs_greeks.speed(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
+        charm_val = bs_greeks.charm(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
+        ultima_val = bs_greeks.ultima(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
+
         if expiry not in raw_by_expiry:
             raw_by_expiry[expiry] = {"Call": [], "Put": []}
 
@@ -277,6 +414,11 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
                 "theta": theta,
                 "theta_pct": calculate_theta_pct(theta, mark_price),
                 "vega": ticker.get("vega", "N/A"),
+                "vanna": vanna_val,
+                "volga": volga_val,
+                "speed": speed_val,
+                "charm": charm_val,
+                "ultima": ultima_val,
                 "symbol": symbol,
                 "is_otm": (
                     (opt_type == "Call" and strike > spot_price)
@@ -441,6 +583,17 @@ def build_figure(
     return fig
 
 
+def _format_greek(value, precision=4):
+    """Форматирует значение грека. None → 'N/A'. Адаптивно: большие числа — обычный формат,
+    очень малые (speed/ultima) — экспоненциальный через :.4g."""
+    num = parse_numeric(value)
+    if num is None:
+        return "N/A"
+    if abs(num) < 1e-3 and num != 0:
+        return f"{num:.4g}"
+    return f"{num:.{precision}f}"
+
+
 def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     option_type = "Call" if "-C-" in item["symbol"] else "Put"
     delta_str = f"{float(item['delta']):.4f}" if item["delta"] != "N/A" else "N/A"
@@ -450,7 +603,7 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     vega_str = f"{float(item['vega']):.2f}" if item["vega"] != "N/A" else "N/A"
     metric_title = SUPPORTED_METRICS[selected_metric]["label"]
     metric_value = parse_numeric(item.get(SUPPORTED_METRICS[selected_metric]["value_key"]))
-    metric_str = f"{metric_value:.2f}" if metric_value is not None else "N/A"
+    metric_str = _format_greek(metric_value)
     theta_pct_value = parse_numeric(item.get("theta_pct"))
     theta_pct_str = f"{theta_pct_value:.2f}%" if theta_pct_value is not None else "N/A"
     return (
@@ -458,14 +611,19 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
         f"Экспирация: {label_date} ({days_to_expiry}д)<br>"
         f"Тип: {option_type}<br>"
         f"Страйк: {format_strike(item['strike'])}<br>"
-        f"{metric_title}: {metric_str}<br>"
+        f"<b>{metric_title}: {metric_str}</b><br>"
         f"IV: {item['iv']:.2f}%<br>"
         f"Theta / Mark Price: {theta_pct_str}<br>"
         f"Mark Price: {mark_str}<br>"
         f"Delta: {delta_str}<br>"
         f"Gamma: {gamma_str}<br>"
         f"Theta: {theta_str}<br>"
-        f"Vega: {vega_str}"
+        f"Vega: {vega_str}<br>"
+        f"Vanna: {_format_greek(item['vanna'])}<br>"
+        f"Volga: {_format_greek(item['volga'])}<br>"
+        f"Speed: {_format_greek(item['speed'])}<br>"
+        f"Charm: {_format_greek(item['charm'])}<br>"
+        f"Ultima: {_format_greek(item['ultima'])}"
     )
 
 
@@ -487,21 +645,27 @@ _worker_start_lock = threading.Lock()
 
 
 def _all_combos():
-    return [(coin, metric) for coin in SUPPORTED_COINS for metric in SUPPORTED_METRICS]
+    # Фоновый воркер греет только дефолтную ставку; нестандартные ставки
+    # считаются по запросу (cache-miss → синхронный refresh_combo).
+    return [
+        (coin, metric, DEFAULT_RATE)
+        for coin in SUPPORTED_COINS
+        for metric in SUPPORTED_METRICS
+    ]
 
 
-def _cache_get(coin, metric):
+def _cache_get(coin, metric, rate):
     with _cache_lock:
-        entry = _cache.get((coin, metric))
+        entry = _cache.get((coin, metric, rate))
         return dict(entry) if entry is not None else None
 
 
-def _cache_set(coin, metric, entry):
+def _cache_set(coin, metric, rate, entry):
     with _cache_lock:
-        _cache[(coin, metric)] = entry
+        _cache[(coin, metric, rate)] = entry
 
 
-def _build_chart_entry(selected_coin, selected_metric):
+def _build_chart_entry(selected_coin, selected_metric, risk_free_rate=DEFAULT_RATE):
     """Сетевой запрос + рендер. Никогда не бросает исключение наружу."""
     try:
         api_base_coin = get_coin_config(selected_coin)["api_base_coin"]
@@ -514,7 +678,7 @@ def _build_chart_entry(selected_coin, selected_metric):
         total_strikes = len(strikes)
         min_strike, max_strike, displayed_strikes = get_strike_window(strikes, spot_price)
         _, by_expiry, sorted_expiries = fetch_and_prepare_data(
-            selected_coin, tickers, min_strike, max_strike, spot_price
+            selected_coin, tickers, min_strike, max_strike, spot_price, risk_free_rate
         )
         if not by_expiry:
             raise ValueError("Нет данных для построения графика в выбранном диапазоне.")
@@ -565,18 +729,18 @@ def _build_chart_entry(selected_coin, selected_metric):
         }
 
 
-def refresh_combo(selected_coin, selected_metric):
+def refresh_combo(selected_coin, selected_metric, risk_free_rate=DEFAULT_RATE):
     """Собирает график для пары и кладёт в кеш. Возвращает запись кеша."""
-    entry = _build_chart_entry(selected_coin, selected_metric)
-    _cache_set(selected_coin, selected_metric, entry)
+    entry = _build_chart_entry(selected_coin, selected_metric, risk_free_rate)
+    _cache_set(selected_coin, selected_metric, risk_free_rate, entry)
     return entry
 
 
 def _background_worker_loop():
     while True:
-        for coin, metric in _all_combos():
+        for coin, metric, rate in _all_combos():
             try:
-                refresh_combo(coin, metric)
+                refresh_combo(coin, metric, rate)
             except Exception:
                 logger.exception(
                     "Background refresh unexpectedly failed for %s/%s", coin, metric
@@ -619,13 +783,14 @@ def index():
     if selected_coin not in SUPPORTED_COINS:
         selected_coin = DEFAULT_COIN
     selected_metric = normalize_metric(request.args.get("metric"))
+    selected_rate = normalize_rate(request.args.get("rate"))
 
     _ensure_worker_started()
 
-    entry = _cache_get(selected_coin, selected_metric)
+    entry = _cache_get(selected_coin, selected_metric, selected_rate)
     if entry is None:
         # Холодный старт / промах кеша — синхронно обновляем именно эту пару.
-        entry = refresh_combo(selected_coin, selected_metric)
+        entry = refresh_combo(selected_coin, selected_metric, selected_rate)
 
     updated_at = entry.get("updated_at")
     updated_str = (
@@ -640,6 +805,7 @@ def index():
         selected_coin=selected_coin,
         metrics=SUPPORTED_METRICS,
         selected_metric=selected_metric,
+        selected_rate=selected_rate,
         chart_html=entry.get("chart_html"),
         error=entry.get("error"),
         spot_price=entry.get("spot_price"),

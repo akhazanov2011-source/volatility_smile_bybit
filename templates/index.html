@@ -220,7 +220,7 @@
 
         .controls {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 16px;
             padding: 20px;
             background: #ffffff;
@@ -239,7 +239,7 @@
             color: var(--muted);
         }
 
-        select, button {
+        select, button, input[type="number"] {
             width: 100%;
             min-height: 46px;
             border-radius: 12px;
@@ -247,7 +247,7 @@
             font-family: inherit;
         }
 
-        select {
+        select, input[type="number"] {
             border: 1px solid var(--border);
             padding: 0 14px;
             background: #f5f6f7;
@@ -374,13 +374,108 @@
             to { transform: rotate(360deg); }
         }
 
+        /* Справочник греков — раскрывающаяся секция внизу страницы. */
+        .glossary {
+            margin: 18px 0 0;
+        }
+
+        .glossary-summary {
+            cursor: pointer;
+            list-style: none;
+            user-select: none;
+        }
+
+        .glossary-summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .glossary-summary h2 {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0;
+            font-size: 1.02rem;
+        }
+
+        .glossary-summary .caret {
+            display: inline-block;
+            transition: transform 0.18s ease;
+            color: var(--accent);
+            font-size: 0.9rem;
+        }
+
+        .glossary[open] .glossary-summary .caret {
+            transform: rotate(90deg);
+        }
+
+        .glossary-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 6px;
+            font-size: 0.92rem;
+        }
+
+        .glossary-table th,
+        .glossary-table td {
+            text-align: left;
+            padding: 12px 14px;
+            border-bottom: 1px solid #eceef2;
+            vertical-align: top;
+        }
+
+        .glossary-table th {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--muted);
+            background: var(--surface-muted);
+        }
+
+        .glossary-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .glossary-name {
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .glossary-source {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.74rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .glossary-source.api {
+            background: #e7f6ec;
+            color: #1f7a3a;
+        }
+
+        .glossary-source.bs {
+            background: #eef3ff;
+            color: #1b4ea3;
+        }
+
+        .glossary-source.derived {
+            background: #fdf3e7;
+            color: #8a5a0b;
+        }
+
+        .glossary-desc {
+            color: var(--text);
+            line-height: 1.5;
+        }
+
         @media (max-width: 960px) {
             .hero {
                 grid-template-columns: 1fr;
             }
 
             .controls {
-                grid-template-columns: 1fr;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
             }
         }
 
@@ -400,6 +495,10 @@
             .hint {
                 padding-left: 14px;
                 padding-right: 14px;
+            }
+
+            .controls {
+                grid-template-columns: 1fr;
             }
 
             .status-pill {
@@ -479,6 +578,11 @@
                 </div>
 
                 <div class="field">
+                    <label for="rate">Risk-free rate (r)</label>
+                    <input type="number" id="rate" name="rate" step="0.005" min="0" max="1" value="{{ selected_rate }}">
+                </div>
+
+                <div class="field">
                     <label>&nbsp;</label>
                     <button type="submit">Update Chart</button>
                 </div>
@@ -497,6 +601,10 @@
                 <div class="stat">
                     <span class="stat-label">Metric</span>
                     <span class="stat-value">{{ metrics[selected_metric]["label"] }}</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Risk-free Rate</span>
+                    <span class="stat-value">{{ selected_rate }}</span>
                 </div>
                 <div class="stat">
                     <span class="stat-label">Expiries</span>
@@ -541,9 +649,51 @@
             {% endif %}
 
             <div class="hint">
-                Hover по точкам показывает полный контекст опциона: текущую метрику, IV, `theta`, `delta`,
-                `gamma`, `vega` и `mark price`. Для каждой экспирации используется одна непрерывная линия.
+                Hover по точкам показывает полный контекст опциона: выбранную метрику, IV, theta,
+                delta, gamma, vega, а также высшие греки (vanna, volga, speed, charm, ultima),
+                которые считаются локально по модели Блэка — Шоулза с указанной безрисковой ставкой.
+                Для каждой экспирации используется одна непрерывная линия.
             </div>
+
+            <details class="glossary panel-head">
+                <summary class="glossary-summary">
+                    <h2><span class="caret">▶</span> Справочник греков</h2>
+                </summary>
+                <p style="margin: 6px 0 0; color: var(--muted); font-size: 0.92rem;">
+                    Метрики, доступные в выпадающем списке. <strong>API</strong> — значение берётся
+                    напрямую из ответа Bybit; <strong>BS</strong> — считается локально по модели
+                    Блэка — Шоулза (Bybit эти греки не отдаёт); <strong>derived</strong> —
+                    нормировка данных API.
+                </p>
+                <div style="overflow-x: auto;">
+                    <table class="glossary-table">
+                        <thead>
+                            <tr>
+                                <th>Метрика</th>
+                                <th>Источник</th>
+                                <th>Описание</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for metric_key, metric in metrics.items() %}
+                            <tr>
+                                <td class="glossary-name">{{ metric["label"] }}</td>
+                                <td>
+                                    {% if metric["source"] == "api" %}
+                                        <span class="glossary-source api">API</span>
+                                    {% elif metric["source"] == "bs" %}
+                                        <span class="glossary-source bs">BS</span>
+                                    {% else %}
+                                        <span class="glossary-source derived">derived</span>
+                                    {% endif %}
+                                </td>
+                                <td class="glossary-desc">{{ metric["description"] }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </section>
     </main>
 </body>
