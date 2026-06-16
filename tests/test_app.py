@@ -23,7 +23,7 @@ import app
 # --------------------------------------------------------------------------------------
 
 def test_normalize_metric_accepts_new_greeks():
-    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima"):
+    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "theo_price"):
         assert app.normalize_metric(key) == key
 
 
@@ -68,7 +68,7 @@ def test_all_metrics_have_required_fields():
 
 
 def test_expected_metric_keys_present():
-    expected = {"iv", "theta", "theta_pct", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima"}
+    expected = {"iv", "theta", "theta_pct", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "theo_price"}
     assert expected == set(app.SUPPORTED_METRICS.keys())
 
 
@@ -116,7 +116,7 @@ def test_fetch_and_prepare_data_returns_higher_greeks():
         assert item["vega"] == "20.0"
         assert item["gamma"] == "0.00002"
         # Новые высшие греки — должны присутствовать (float или None)
-        for key in ("vanna", "volga", "speed", "charm", "ultima"):
+        for key in ("vanna", "volga", "speed", "charm", "ultima", "theo_price"):
             assert key in item, f"Ключ {key} отсутствует в item"
             # При T > 0, σ > 0, S > 0 — должны быть числом, не None
             assert item[key] is not None, f"{key} не должен быть None для валидного опциона"
@@ -225,3 +225,57 @@ def test_index_template_no_toolbar_without_chart(monkeypatch):
         html = app.index()
 
     assert 'class="series-toolbar"' not in html
+
+
+def test_index_template_renders_metric_description(monkeypatch):
+    """Шаблон должен рендерить описание выбранной метрики над графиком."""
+    monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_cache_get",
+        lambda coin, metric, rate: {
+            "chart_html": "<div id=\"plot\"></div>",
+            "error": None,
+            "spot_price": 60000.0,
+            "expiries_count": 5,
+            "min_strike": 55000.0,
+            "max_strike": 65000.0,
+            "displayed_strikes": 10,
+            "total_strikes": 20,
+            "updated_at": 0.0,
+            "status": "live",
+        },
+    )
+
+    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+        html = app.index()
+
+    assert 'class="metric-description"' in html
+    # Описание метрики IV из SUPPORTED_METRICS должно быть в HTML.
+    assert "Подразумеваемая волатильность" in html
+
+
+def test_index_template_cache_updated_utc_label(monkeypatch):
+    """В кеш-баре должна быть пометка (UTC) рядом со временем обновления."""
+    monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_cache_get",
+        lambda coin, metric, rate: {
+            "chart_html": "<div id=\"plot\"></div>",
+            "error": None,
+            "spot_price": 60000.0,
+            "expiries_count": 5,
+            "min_strike": 55000.0,
+            "max_strike": 65000.0,
+            "displayed_strikes": 10,
+            "total_strikes": 20,
+            "updated_at": 0.0,
+            "status": "live",
+        },
+    )
+
+    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+        html = app.index()
+
+    assert "(UTC)" in html
