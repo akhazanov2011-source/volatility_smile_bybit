@@ -231,6 +231,7 @@
             display: flex;
             flex-direction: column;
             gap: 8px;
+            flex: 1;
         }
 
         label {
@@ -355,12 +356,12 @@
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 10px;
+            gap: 6px;
             margin-bottom: 12px;
         }
 
         .series-toolbar-label {
-            font-size: 0.8rem;
+            font-size: 0.75rem;
             font-weight: 700;
             color: var(--muted);
             text-transform: uppercase;
@@ -369,13 +370,13 @@
 
         /* Вторичные (outline) кнопки, чтобы не путать с primary «Update Chart». */
         .series-btn {
-            min-height: 38px;
-            padding: 0 16px;
+            min-height: 30px;
+            padding: 0 10px;
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 8px;
             background: var(--surface);
             color: var(--text);
-            font-size: 0.92rem;
+            font-size: 0.82rem;
             font-weight: 600;
             font-family: inherit;
             cursor: pointer;
@@ -385,6 +386,20 @@
         .series-btn:hover {
             background: var(--surface-muted);
             border-color: #c4c9d2;
+        }
+
+        /* Описание выбранной метрики — между кеш-баром и графиком. */
+        .metric-description {
+            padding: 10px 20px;
+            border-bottom: 1px solid #eceef2;
+            background: var(--surface-muted);
+            font-size: 0.9rem;
+            color: var(--muted);
+            line-height: 1.55;
+        }
+
+        .metric-description strong {
+            color: var(--text);
         }
 
         .preloader {
@@ -666,7 +681,7 @@
                     {% elif cache_status == 'warming' %}
                         Кеш: прогревается, показан снимок
                     {% else %}
-                        Кеш обновлён в {{ cache_updated_str }}
+                        Кеш обновлён в {{ cache_updated_str }} (UTC)
                     {% endif %}
                 </span>
                 <span style="margin-left:auto; opacity:0.8;">Фоновое обновление каждые 3 мин</span>
@@ -675,6 +690,10 @@
             {% if error %}
             <div class="error">{{ error }}</div>
             {% elif chart_html %}
+            <div class="metric-description">
+                <strong>{{ metrics[selected_metric]["label"] }}:</strong>
+                {{ metrics[selected_metric]["description"] }}
+            </div>
             <div class="chart-wrap">
                 <div class="series-toolbar">
                     <span class="series-toolbar-label">Серии:</span>
