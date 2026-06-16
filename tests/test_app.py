@@ -165,3 +165,63 @@ def test_cache_keyed_by_rate(monkeypatch):
     app._cache_set("BTC", "iv", 0.0, {"status": "live", "updated_at": 0.0})
     assert app._cache_get("BTC", "iv", 0.0) is not None
     assert app._cache_get("BTC", "iv", 0.05) is None
+
+
+# --------------------------------------------------------------------------------------
+# Рендер шаблона index() — тулбар управления видимостью серий (без сети)
+# --------------------------------------------------------------------------------------
+
+def test_index_template_renders_series_toolbar(monkeypatch):
+    """Шаблон должен рендерить тулбар серий и кнопки, когда есть chart_html."""
+    monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_cache_get",
+        lambda coin, metric, rate: {
+            "chart_html": "<div id=\"plot\"></div>",
+            "error": None,
+            "spot_price": 60000.0,
+            "expiries_count": 5,
+            "min_strike": 55000.0,
+            "max_strike": 65000.0,
+            "displayed_strikes": 10,
+            "total_strikes": 20,
+            "updated_at": 0.0,
+            "status": "live",
+        },
+    )
+
+    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+        html = app.index()
+
+    assert 'class="series-toolbar"' in html
+    assert 'id="show-all-series"' in html
+    assert 'id="hide-all-series"' in html
+    # JS, отвечающий за сохранение видимости серий в localStorage.
+    assert "vsm_hidden_series" in html
+
+
+def test_index_template_no_toolbar_without_chart(monkeypatch):
+    """Когда chart_html отсутствует (ошибка/прогрев), тулбар не должен рендериться."""
+    monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_cache_get",
+        lambda coin, metric, rate: {
+            "chart_html": None,
+            "error": "Не удалось загрузить данные Bybit.",
+            "spot_price": None,
+            "expiries_count": 0,
+            "min_strike": None,
+            "max_strike": None,
+            "displayed_strikes": 0,
+            "total_strikes": 0,
+            "updated_at": 0.0,
+            "status": "error",
+        },
+    )
+
+    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+        html = app.index()
+
+    assert 'class="series-toolbar"' not in html

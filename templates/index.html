@@ -350,6 +350,43 @@
             background: #f0a500;
         }
 
+        /* Тулбар управления видимостью серий над графиком. */
+        .series-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .series-toolbar-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        /* Вторичные (outline) кнопки, чтобы не путать с primary «Update Chart». */
+        .series-btn {
+            min-height: 38px;
+            padding: 0 16px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 0.92rem;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.12s ease, border-color 0.12s ease;
+        }
+
+        .series-btn:hover {
+            background: var(--surface-muted);
+            border-color: #c4c9d2;
+        }
+
         .preloader {
             display: flex;
             flex-direction: column;
@@ -639,7 +676,136 @@
             <div class="error">{{ error }}</div>
             {% elif chart_html %}
             <div class="chart-wrap">
+                <div class="series-toolbar">
+                    <span class="series-toolbar-label">Серии:</span>
+                    <button type="button" id="show-all-series" class="series-btn">Показать все серии</button>
+                    <button type="button" id="hide-all-series" class="series-btn">Очистить все серии</button>
+                </div>
                 <div class="chart-card">{{ chart_html|safe }}</div>
+                <script>
+                // Сохраняем видимость серий (какие экспирации скрыты) в localStorage,
+                // чтобы выбор переживал смену метрики и безрисковой ставки в рамках
+                // одной монеты. Сервер, доменная логика и кеш НЕ меняются — состояние
+                // чисто клиентское. Ключом серии служит дата экспирации
+                // (trace.legendgrouptitle.text): она зависит только от монеты+экспирации
+                // и не меняется при переключении метрики.
+                (function () {
+                    var COIN = {{ selected_coin|tojson }};
+                    var STORAGE_KEY = "vsm_hidden_series";
+
+                    function readStore() {
+                        try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+                        catch (e) { return {}; }
+                    }
+                    function writeStore(obj) {
+                        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch (e) {}
+                    }
+                    function getHidden() {
+                        return readStore()[COIN] || [];
+                    }
+                    function setHidden(arr) {
+                        var store = readStore();
+                        store[COIN] = arr;
+                        writeStore(store);
+                    }
+                    function clearHidden() {
+                        var store = readStore();
+                        delete store[COIN];
+                        writeStore(store);
+                    }
+
+                    function findGraphDiv() {
+                        // Plotly помечает корневой div графика классом js-plotly-plot.
+                        return document.querySelector('.js-plotly-plot');
+                    }
+
+                    function seriesKey(trace) {
+                        // Стабильный идентификатор — чистая дата экспирации.
+                        if (trace && trace.legendgrouptitle && trace.legendgrouptitle.text) {
+                            return trace.legendgrouptitle.text;
+                        }
+                        return trace && trace.name ? trace.name : null;
+                    }
+
+                    // Флаг guarded, чтобы наш собственный restyle не порождал лишних
+                    // перезаписей localStorage через обработчик plotly_restyle.
+                    var applying = false;
+
+                    function applyState() {
+                        if (!window.Plotly) return;
+                        var gd = findGraphDiv();
+                        if (!gd || !gd.data) return;
+                        var hidden = {};
+                        getHidden().forEach(function (k) { hidden[k] = true; });
+                        var visible = gd.data.map(function (trace) {
+                            var key = seriesKey(trace);
+                            return key && hidden[key] ? "legendonly" : true;
+                        });
+                        applying = true;
+                        Plotly.restyle(gd, {visible: visible}).then(
+                            function () { applying = false; },
+                            function () { applying = false; }
+                        );
+                    }
+
+                    function captureState() {
+                        var gd = findGraphDiv();
+                        if (!gd || !gd.data) return;
+                        var hidden = gd.data
+                            .filter(function (trace) { return trace.visible === "legendonly"; })
+                            .map(seriesKey)
+                            .filter(function (k) { return !!k; });
+                        setHidden(hidden);
+                    }
+
+                    function whenReady(cb) {
+                        if (window.Plotly && findGraphDiv()) { cb(); return; }
+                        var tries = 0;
+                        var timer = setInterval(function () {
+                            tries++;
+                            if (window.Plotly && findGraphDiv()) { clearInterval(timer); cb(); }
+                            else if (tries > 50) { clearInterval(timer); }
+                        }, 100);
+                    }
+
+                    whenReady(function () {
+                        applyState();
+
+                        var gd = findGraphDiv();
+                        if (gd && typeof gd.on === "function") {
+                            gd.on('plotly_restyle', function () {
+                                if (applying) return;
+                                captureState();
+                            });
+                        }
+
+                        var showAll = document.getElementById('show-all-series');
+                        var hideAll = document.getElementById('hide-all-series');
+
+                        if (showAll) showAll.addEventListener('click', function () {
+                            if (!window.Plotly) return;
+                            var g = findGraphDiv();
+                            if (!g) return;
+                            applying = true;
+                            Plotly.restyle(g, {visible: true}).then(
+                                function () { applying = false; clearHidden(); },
+                                function () { applying = false; }
+                            );
+                        });
+
+                        if (hideAll) hideAll.addEventListener('click', function () {
+                            if (!window.Plotly) return;
+                            var g = findGraphDiv();
+                            if (!g) return;
+                            applying = true;
+                            Plotly.restyle(g, {visible: 'legendonly'}).then(
+                                function () { applying = false; captureState(); },
+                                function () { applying = false; }
+                            );
+                        });
+                    });
+                })();
+                </script>
             </div>
             {% else %}
             <div class="preloader">
