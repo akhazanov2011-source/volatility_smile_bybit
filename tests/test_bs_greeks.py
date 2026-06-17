@@ -167,26 +167,29 @@ def test_ultima_matches_fd_of_volga_wrt_sigma():
 # Edge cases
 # --------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("fn", [bs.bs_delta, bs.bs_gamma, bs.bs_vega, bs.bs_theta,
-                                 bs.vanna, bs.volga, bs.speed, bs.charm, bs.ultima])
+@pytest.mark.parametrize("fn", [bs.bs_call_price, bs.bs_put_price, bs.bs_delta, bs.bs_gamma,
+                                 bs.bs_vega, bs.bs_theta, bs.vanna, bs.volga, bs.speed,
+                                 bs.charm, bs.ultima])
 def test_zero_time_returns_none(fn):
     assert fn(60000.0, 60000.0, 0.0, 0.0, 0.6) is None
 
 
-@pytest.mark.parametrize("fn", [bs.bs_delta, bs.bs_gamma, bs.bs_vega, bs.bs_theta,
-                                 bs.vanna, bs.volga, bs.speed, bs.charm, bs.ultima])
+@pytest.mark.parametrize("fn", [bs.bs_call_price, bs.bs_put_price, bs.bs_delta, bs.bs_gamma,
+                                 bs.bs_vega, bs.bs_theta, bs.vanna, bs.volga, bs.speed,
+                                 bs.charm, bs.ultima])
 def test_zero_sigma_returns_none(fn):
     assert fn(60000.0, 60000.0, 0.25, 0.0, 0.0) is None
 
 
-@pytest.mark.parametrize("fn", [bs.bs_gamma, bs.bs_vega, bs.vanna, bs.volga, bs.speed,
-                                 bs.charm, bs.ultima])
+@pytest.mark.parametrize("fn", [bs.bs_call_price, bs.bs_put_price, bs.bs_gamma, bs.bs_vega,
+                                 bs.vanna, bs.volga, bs.speed, bs.charm, bs.ultima])
 def test_zero_spot_returns_none(fn):
     assert fn(0.0, 60000.0, 0.25, 0.0, 0.6) is None
 
 
-@pytest.mark.parametrize("fn", [bs.bs_delta, bs.bs_gamma, bs.bs_vega, bs.bs_theta,
-                                 bs.vanna, bs.volga, bs.speed, bs.charm, bs.ultima])
+@pytest.mark.parametrize("fn", [bs.bs_call_price, bs.bs_put_price, bs.bs_delta, bs.bs_gamma,
+                                 bs.bs_vega, bs.bs_theta, bs.vanna, bs.volga, bs.speed,
+                                 bs.charm, bs.ultima])
 def test_negative_time_returns_none(fn):
     assert fn(60000.0, 60000.0, -0.25, 0.0, 0.6) is None
 
