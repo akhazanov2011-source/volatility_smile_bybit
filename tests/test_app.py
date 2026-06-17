@@ -147,6 +147,26 @@ def test_fetch_and_prepare_data_default_rate_works():
     assert by_expiry[expiry]["Call"] and by_expiry[expiry]["Put"]
 
 
+def test_fetch_and_prepare_data_zero_iv_returns_none_greeks():
+    """markIv=0 не должен вызывать ZeroDivisionError; BS-метрики — None."""
+    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
+    tickers = [
+        _make_ticker(f"BTC-{future}-60000-C-USDT", mark_iv="0"),
+        _make_ticker(f"BTC-{future}-60000-P-USDT", mark_iv="0"),
+    ]
+    spot = 60000.0
+    _, by_expiry, sorted_expiries = app.fetch_and_prepare_data(
+        "BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.0
+    )
+    assert len(sorted_expiries) == 1
+    expiry = sorted_expiries[0]
+    for opt_type in ("Call", "Put"):
+        item = by_expiry[expiry][opt_type][0]
+        assert item["theo_price"] is None
+        for key in ("vanna", "volga", "speed", "charm", "ultima"):
+            assert item[key] is None, f"{key} должен быть None при markIv=0"
+
+
 # --------------------------------------------------------------------------------------
 # Кеш по 3-туплю (без сети) — через mock refresh_combo
 # --------------------------------------------------------------------------------------

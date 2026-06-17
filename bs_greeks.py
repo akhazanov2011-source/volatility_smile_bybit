@@ -67,6 +67,8 @@ def bs_d1_d2(spot, strike, time_to_expiry, risk_free_rate, sigma):
 
 def bs_call_price(spot, strike, time_to_expiry, risk_free_rate, sigma):
     """Цена Call-опциона по модели Блэка — Шоулза."""
+    if not _is_valid(spot, time_to_expiry, sigma):
+        return None
     d1, d2 = bs_d1_d2(spot, strike, time_to_expiry, risk_free_rate, sigma)
     discount = math.exp(-risk_free_rate * time_to_expiry)
     return spot * norm_cdf(d1) - strike * discount * norm_cdf(d2)
@@ -74,6 +76,8 @@ def bs_call_price(spot, strike, time_to_expiry, risk_free_rate, sigma):
 
 def bs_put_price(spot, strike, time_to_expiry, risk_free_rate, sigma):
     """Цена Put-опциона по модели Блэка — Шоулза."""
+    if not _is_valid(spot, time_to_expiry, sigma):
+        return None
     d1, d2 = bs_d1_d2(spot, strike, time_to_expiry, risk_free_rate, sigma)
     discount = math.exp(-risk_free_rate * time_to_expiry)
     return strike * discount * norm_cdf(-d2) - spot * norm_cdf(-d1)
