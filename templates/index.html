@@ -18,24 +18,33 @@
             --danger-bg: #fff1f1;
             --danger-text: #b42318;
             --shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.06);
+            --topbar-h: 60px;
         }
 
         * {
             box-sizing: border-box;
         }
 
-        body {
+        /* Каркас «без вертикальной прокрутки»: страница занимает ровно один вьюпорт,
+           скроллится только при необходимости внутренний контент (sidebar), но не body. */
+        html, body {
             margin: 0;
-            min-height: 100vh;
+            height: 100vh;
+            overflow: hidden;
             font-family: Helvetica, Arial, sans-serif;
             color: var(--text);
             background: var(--bg);
         }
 
+        .app-shell {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            min-height: 0;
+        }
+
         .topbar {
-            position: sticky;
-            top: 0;
-            z-index: 10;
+            flex: 0 0 auto;
             background: rgba(255, 255, 255, 0.94);
             backdrop-filter: blur(12px);
             border-bottom: 1px solid #e4e6eb;
@@ -43,9 +52,9 @@
         }
 
         .topbar-inner {
-            max-width: 1240px;
+            max-width: 1480px;
             margin: 0 auto;
-            min-height: 64px;
+            height: var(--topbar-h);
             padding: 0 18px;
             display: flex;
             align-items: center;
@@ -61,14 +70,14 @@
         }
 
         .brand-badge {
-            width: 40px;
-            height: 40px;
+            width: 36px;
+            height: 36px;
             border-radius: 50%;
             background: linear-gradient(135deg, #2d88ff, #1877f2);
             color: white;
             display: grid;
             place-items: center;
-            font-size: 1.1rem;
+            font-size: 1rem;
             font-weight: 800;
         }
 
@@ -78,14 +87,14 @@
 
         .brand-title {
             margin: 0;
-            font-size: 1rem;
+            font-size: 0.98rem;
             font-weight: 700;
         }
 
         .brand-subtitle {
             margin: 2px 0 0;
             color: var(--muted);
-            font-size: 0.86rem;
+            font-size: 0.82rem;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -98,8 +107,8 @@
             border-radius: 999px;
             background: #edf3ff;
             color: #1b4ea3;
-            padding: 10px 14px;
-            font-size: 0.9rem;
+            padding: 8px 12px;
+            font-size: 0.86rem;
             font-weight: 600;
         }
 
@@ -110,17 +119,18 @@
             background: var(--success);
         }
 
-        .page {
-            max-width: 1240px;
-            margin: 0 auto;
-            padding: 20px 18px 40px;
-        }
-
-        .hero {
+        /* Рабочая зона под шапкой: двухколоночный grid (sidebar | chart-area),
+           занимает всё оставшееся место по высоте. */
+        .workspace {
+            flex: 1 1 auto;
+            min-height: 0;
             display: grid;
-            grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.8fr);
-            gap: 18px;
-            margin-bottom: 18px;
+            grid-template-columns: 320px minmax(0, 1fr);
+            gap: 16px;
+            max-width: 1480px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 16px;
         }
 
         .card {
@@ -130,99 +140,45 @@
             box-shadow: var(--shadow);
         }
 
-        .hero-main {
-            padding: 24px 24px 20px;
-            background:
-                radial-gradient(circle at top left, rgba(24, 119, 242, 0.14), transparent 34%),
-                linear-gradient(180deg, #ffffff, #fbfcff);
-        }
-
-        .eyebrow {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 14px;
-            padding: 8px 12px;
-            border-radius: 999px;
-            background: #eef3ff;
-            color: #1b4ea3;
-            font-size: 0.82rem;
-            font-weight: 700;
-            letter-spacing: 0.02em;
-        }
-
-        h1 {
-            margin: 0;
-            font-size: clamp(2rem, 4vw, 3.2rem);
-            line-height: 0.98;
-            letter-spacing: -0.03em;
-        }
-
-        .subtitle {
-            margin: 16px 0 0;
-            max-width: 760px;
-            color: var(--muted);
-            font-size: 1rem;
-            line-height: 1.55;
-        }
-
-        .hero-side {
-            padding: 20px;
-            display: grid;
-            gap: 12px;
-            align-content: start;
-            background: linear-gradient(180deg, #ffffff, #f7faff);
-        }
-
-        .mini-title {
-            margin: 0;
-            font-size: 0.92rem;
-            font-weight: 700;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-
-        .mini-stat {
-            padding: 14px 16px;
-            border-radius: 14px;
-            background: var(--surface-muted);
-            border: 1px solid #edf0f4;
-        }
-
-        .mini-stat strong {
-            display: block;
-            margin-top: 6px;
-            font-size: 1.18rem;
-            color: var(--text);
-        }
-
-        .panel {
+        /* Левая колонка: контролы + статистика + кеш-бар.
+           Скроллится изнутри, если контент не помещается, но не страница целиком. */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
             overflow: hidden;
         }
 
+        .sidebar-scroll {
+            overflow-y: auto;
+            min-height: 0;
+            padding: 4px 2px 4px 0;
+        }
+
         .panel-head {
-            padding: 16px 20px;
+            padding: 14px 18px;
             border-bottom: 1px solid #eceef2;
             background: linear-gradient(180deg, #ffffff, #fafbfc);
+            flex: 0 0 auto;
         }
 
         .panel-head h2 {
             margin: 0;
-            font-size: 1.02rem;
+            font-size: 1rem;
         }
 
         .panel-head p {
-            margin: 6px 0 0;
+            margin: 4px 0 0;
             color: var(--muted);
-            font-size: 0.92rem;
+            font-size: 0.86rem;
+            line-height: 1.4;
         }
 
         .controls {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 16px;
-            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 16px 18px;
             background: #ffffff;
             border-bottom: 1px solid #eceef2;
         }
@@ -230,58 +186,54 @@
         .field {
             display: flex;
             flex-direction: column;
-            gap: 8px;
-            flex: 1;
+            gap: 6px;
         }
 
         label {
-            font-size: 0.9rem;
+            font-size: 0.82rem;
             font-weight: 700;
             color: var(--muted);
         }
 
-        select, button, input[type="number"] {
+        select, input[type="number"] {
             width: 100%;
-            min-height: 46px;
-            border-radius: 12px;
-            font-size: 1rem;
+            min-height: 42px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            padding: 0 12px;
+            background: #f5f6f7;
+            color: var(--text);
+            font-size: 0.94rem;
             font-family: inherit;
         }
 
-        select, input[type="number"] {
-            border: 1px solid var(--border);
-            padding: 0 14px;
-            background: #f5f6f7;
-            color: var(--text);
+        /* Подсказка про автообновление вместо бывшей кнопки Update Chart. */
+        .auto-note {
+            margin: 2px 0 0;
+            font-size: 0.78rem;
+            color: var(--muted);
+            line-height: 1.35;
         }
 
-        button {
-            border: none;
-            background: linear-gradient(180deg, var(--accent), var(--accent-strong));
-            color: white;
-            font-weight: 700;
-            cursor: pointer;
-            box-shadow: 0 10px 24px rgba(24, 119, 242, 0.24);
-        }
-
+        /* Статистика — компактный 2-колоночный grid, чтобы 7 плиток не растягивались. */
         .stats {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            padding: 18px 20px 0;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            padding: 14px 18px 4px;
         }
 
         .stat {
-            min-width: 160px;
-            padding: 14px 16px;
-            border-radius: 14px;
+            padding: 10px 12px;
+            border-radius: 12px;
             background: var(--surface-muted);
             border: 1px solid #edf0f4;
+            min-width: 0;
         }
 
         .stat-label {
             display: block;
-            font-size: 0.8rem;
+            font-size: 0.72rem;
             font-weight: 700;
             color: var(--muted);
             text-transform: uppercase;
@@ -290,49 +242,37 @@
 
         .stat-value {
             display: block;
-            margin-top: 6px;
-            font-size: 1.02rem;
+            margin-top: 4px;
+            font-size: 0.96rem;
             font-weight: 700;
+            word-break: break-word;
         }
 
-        .chart-wrap {
-            padding: 16px 20px 20px;
-        }
-
-        .chart-card {
-            background: white;
-            border-radius: 18px;
-            border: 1px solid #e5e9f0;
-            overflow: hidden;
-        }
-
-        .error {
-            margin: 20px;
-            padding: 16px 18px;
-            border-radius: 14px;
-            background: var(--danger-bg);
-            color: var(--danger-text);
-            border: 1px solid #f1c0c0;
-            font-weight: 600;
-        }
-
-        .hint {
-            padding: 0 20px 22px;
+        .metric-description {
+            padding: 10px 18px;
+            border-bottom: 1px solid #eceef2;
+            background: var(--surface-muted);
+            font-size: 0.84rem;
             color: var(--muted);
-            font-size: 0.95rem;
-            line-height: 1.55;
+            line-height: 1.45;
+        }
+
+        .metric-description strong {
+            color: var(--text);
         }
 
         .cache-bar {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 12px;
-            padding: 12px 20px;
-            border-bottom: 1px solid #eceef2;
+            gap: 10px;
+            padding: 10px 18px;
             background: var(--surface-muted);
-            font-size: 0.86rem;
+            font-size: 0.8rem;
             color: var(--muted);
+            flex: 0 0 auto;
+            border-top: 1px solid #eceef2;
+            border-radius: 0 0 18px 18px;
         }
 
         .cache-bar .dot {
@@ -341,6 +281,7 @@
             border-radius: 50%;
             background: var(--success);
             display: inline-block;
+            flex: 0 0 auto;
         }
 
         .cache-bar .dot.error {
@@ -351,27 +292,56 @@
             background: #f0a500;
         }
 
-        /* Тулбар управления видимостью серий над графиком. */
-        .series-toolbar {
+        /* Правая колонка: тулбар + упругий график. */
+        .chart-area {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            min-height: 0;
+            gap: 12px;
+        }
+
+        .chart-toolbar {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 6px;
-            margin-bottom: 12px;
+            gap: 8px;
+            flex: 0 0 auto;
         }
 
-        .series-toolbar-label {
-            font-size: 0.75rem;
+        .chart-toolbar-label {
+            font-size: 0.72rem;
             font-weight: 700;
             color: var(--muted);
             text-transform: uppercase;
             letter-spacing: 0.04em;
+            margin-right: 2px;
         }
 
-        /* Вторичные (outline) кнопки, чтобы не путать с primary «Update Chart». */
+        /* Информационные чип-кнопки, открывающие hint/glossary в overlay. */
+        .chip {
+            min-height: 32px;
+            padding: 0 12px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 0.82rem;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.12s ease, border-color 0.12s ease;
+        }
+
+        .chip:hover {
+            background: var(--surface-muted);
+            border-color: #c4c9d2;
+        }
+
+        /* Вторичные (outline) кнопки управления видимостью серий. */
         .series-btn {
-            min-height: 30px;
-            padding: 0 10px;
+            min-height: 32px;
+            padding: 0 12px;
             border: 1px solid var(--border);
             border-radius: 8px;
             background: var(--surface);
@@ -388,18 +358,34 @@
             border-color: #c4c9d2;
         }
 
-        /* Описание выбранной метрики — между кеш-баром и графиком. */
-        .metric-description {
-            padding: 10px 20px;
-            border-bottom: 1px solid #eceef2;
-            background: var(--surface-muted);
-            font-size: 0.9rem;
-            color: var(--muted);
-            line-height: 1.55;
+        /* Контейнер графика занимает всё оставшееся место и отдаёт высоту Plotly. */
+        .chart-card {
+            flex: 1 1 auto;
+            min-height: 0;
+            background: white;
+            border-radius: 18px;
+            border: 1px solid #e5e9f0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }
 
-        .metric-description strong {
-            color: var(--text);
+        /* Plotly рендерит inner div с width/height=100% (см. app.py: default_width/height).
+           Гарантируем, что корневой .js-plotly-plot тоже растягивается. */
+        .chart-card > .js-plotly-plot,
+        .chart-card > div {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        .error {
+            margin: 16px;
+            padding: 14px 16px;
+            border-radius: 14px;
+            background: var(--danger-bg);
+            color: var(--danger-text);
+            border: 1px solid #f1c0c0;
+            font-weight: 600;
         }
 
         .preloader {
@@ -408,7 +394,8 @@
             align-items: center;
             justify-content: center;
             gap: 14px;
-            padding: 56px 20px;
+            flex: 1 1 auto;
+            min-height: 200px;
             color: var(--muted);
             text-align: center;
         }
@@ -426,57 +413,95 @@
             to { transform: rotate(360deg); }
         }
 
-        /* Справочник греков — раскрывающаяся секция внизу страницы. */
-        .glossary {
-            margin: 18px 0 0;
+        /* Overlay-модалки для hint и glossary (вынесены из потока). */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: rgba(28, 30, 33, 0.45);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
         }
 
-        .glossary-summary {
-            cursor: pointer;
-            list-style: none;
-            user-select: none;
-        }
-
-        .glossary-summary::-webkit-details-marker {
+        .modal-overlay[hidden] {
             display: none;
         }
 
-        .glossary-summary h2 {
-            display: inline-flex;
+        .modal {
+            background: var(--surface);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            max-width: 760px;
+            width: 100%;
+            max-height: 86vh;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-head {
+            display: flex;
             align-items: center;
-            gap: 8px;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 16px 20px;
+            border-bottom: 1px solid #eceef2;
+            position: sticky;
+            top: 0;
+            background: var(--surface);
+            border-radius: 18px 18px 0 0;
+        }
+
+        .modal-head h2 {
             margin: 0;
             font-size: 1.02rem;
         }
 
-        .glossary-summary .caret {
-            display: inline-block;
-            transition: transform 0.18s ease;
-            color: var(--accent);
-            font-size: 0.9rem;
+        .modal-close {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--surface);
+            color: var(--text);
+            width: 32px;
+            height: 32px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            font-family: inherit;
         }
 
-        .glossary[open] .glossary-summary .caret {
-            transform: rotate(90deg);
+        .modal-close:hover {
+            background: var(--surface-muted);
+        }
+
+        .modal-body {
+            padding: 16px 20px 20px;
+        }
+
+        .modal-body p {
+            color: var(--muted);
+            font-size: 0.9rem;
+            line-height: 1.55;
         }
 
         .glossary-table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 6px;
-            font-size: 0.92rem;
+            font-size: 0.9rem;
         }
 
         .glossary-table th,
         .glossary-table td {
             text-align: left;
-            padding: 12px 14px;
+            padding: 10px 12px;
             border-bottom: 1px solid #eceef2;
             vertical-align: top;
         }
 
         .glossary-table th {
-            font-size: 0.8rem;
+            font-size: 0.78rem;
             text-transform: uppercase;
             letter-spacing: 0.04em;
             color: var(--muted);
@@ -521,36 +546,23 @@
             line-height: 1.5;
         }
 
-        @media (max-width: 960px) {
-            .hero {
-                grid-template-columns: 1fr;
+        /* Адаптив: на узких экранах колонки складываются в одну. */
+        @media (max-width: 900px) {
+            .workspace {
+                grid-template-columns: minmax(0, 1fr);
+                grid-template-rows: auto minmax(0, 1fr);
             }
 
-            .controls {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
+            .sidebar {
+                max-height: 38vh;
             }
         }
 
-        @media (max-width: 720px) {
+        @media (max-width: 640px) {
             .topbar-inner,
-            .page {
+            .workspace {
                 padding-left: 12px;
                 padding-right: 12px;
-            }
-
-            .hero-main,
-            .hero-side,
-            .panel-head,
-            .controls,
-            .stats,
-            .chart-wrap,
-            .hint {
-                padding-left: 14px;
-                padding-right: 14px;
-            }
-
-            .controls {
-                grid-template-columns: 1fr;
             }
 
             .status-pill {
@@ -560,291 +572,170 @@
     </style>
 </head>
 <body>
-    <header class="topbar">
-        <div class="topbar-inner">
-            <div class="brand">
-                <div class="brand-badge">f</div>
-                <div class="brand-copy">
-                    <p class="brand-title">Volatility Analytics</p>
-                    <p class="brand-subtitle">Bybit options monitor for smile and theta structure</p>
+    <div class="app-shell">
+        <header class="topbar">
+            <div class="topbar-inner">
+                <div class="brand">
+                    <div class="brand-badge">f</div>
+                    <div class="brand-copy">
+                        <p class="brand-title">Volatility Analytics</p>
+                        <p class="brand-subtitle">Bybit options monitor for smile and theta structure</p>
+                    </div>
+                </div>
+                <div class="status-pill">
+                    <span class="status-dot"></span>
+                    Live public market snapshot
                 </div>
             </div>
-            <div class="status-pill">
-                <span class="status-dot"></span>
-                Live public market snapshot
-            </div>
-        </div>
-    </header>
+        </header>
 
-    <main class="page">
-        <section class="hero">
-            <article class="card hero-main">
-                <div class="eyebrow">Options dashboard</div>
-                <h1>Bybit Smile Monitor</h1>
-                <p class="subtitle">
-                    Переключайтесь между волатильностью и `theta`, чтобы смотреть форму улыбки под разными
-                    углами. Диапазон страйков подбирается автоматически и покрывает 70% ближайших к spot уровней.
-                </p>
-            </article>
+        <div class="workspace">
+            <aside class="card sidebar">
+                <div class="panel-head">
+                    <h2>Параметры</h2>
+                    <p>График обновляется автоматически при изменении любого параметра.</p>
+                </div>
 
-            <aside class="card hero-side">
-                <p class="mini-title">Workspace</p>
-                <div class="mini-stat">
-                    Актив
-                    <strong>{{ selected_coin }}</strong>
+                <div class="sidebar-scroll">
+                    <form class="controls" id="controls-form" method="get" action="/">
+                        <div class="field">
+                            <label for="coin">Asset</label>
+                            <select id="coin" name="coin">
+                                {% for coin in coins %}
+                                <option value="{{ coin }}" {% if coin == selected_coin %}selected{% endif %}>{{ coin }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="field">
+                            <label for="metric">Metric</label>
+                            <select id="metric" name="metric">
+                                {% for metric_key, metric in metrics.items() %}
+                                <option value="{{ metric_key }}" {% if metric_key == selected_metric %}selected{% endif %}>{{ metric["label"] }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="field">
+                            <label for="rate">Risk-free rate (r)</label>
+                            <input type="number" id="rate" name="rate" step="0.005" min="0" max="1" value="{{ selected_rate }}">
+                            <p class="auto-note">Применяется по Enter или при потере фокуса.</p>
+                        </div>
+                    </form>
+
+                    {% if spot_price %}
+                    <div class="stats">
+                        <div class="stat">
+                            <span class="stat-label">Asset</span>
+                            <span class="stat-value">{{ selected_coin }}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Spot</span>
+                            <span class="stat-value">{{ "%.2f"|format(spot_price) }}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Metric</span>
+                            <span class="stat-value">{{ metrics[selected_metric]["label"] }}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Risk-free Rate</span>
+                            <span class="stat-value">{{ selected_rate }}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Expiries</span>
+                            <span class="stat-value">{{ expiries_count }}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Visible Strikes</span>
+                            <span class="stat-value">{{ displayed_strikes }} / {{ total_strikes }}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Window</span>
+                            <span class="stat-value">{{ "%.2f"|format(min_strike) }} - {{ "%.2f"|format(max_strike) }}</span>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    {% if error %}
+                    {% elif chart_html %}
+                    <div class="metric-description">
+                        <strong>{{ metrics[selected_metric]["label"] }}:</strong>
+                        {{ metrics[selected_metric]["description"] }}
+                    </div>
+                    {% endif %}
                 </div>
-                <div class="mini-stat">
-                    Метрика
-                    <strong>{{ metrics[selected_metric]["label"] }}</strong>
-                </div>
-                <div class="mini-stat">
-                    Режим
-                    <strong>One-line smile</strong>
+
+                <div class="cache-bar">
+                    <span class="dot {% if cache_status == 'error' %}error{% elif cache_status == 'warming' %}warm{% endif %}"></span>
+                    <span>
+                        {% if cache_status == 'error' %}
+                            Кеш: ошибка последнего обновления
+                        {% elif cache_status == 'warming' %}
+                            Кеш: прогревается, показан снимок
+                        {% else %}
+                            Кеш обновлён в {{ cache_updated_str }} (UTC)
+                        {% endif %}
+                    </span>
+                    <span style="margin-left:auto; opacity:0.8;">Фоновое обновление каждые 3 мин</span>
                 </div>
             </aside>
-        </section>
 
-        <section class="card panel">
-            <div class="panel-head">
-                <h2>Chart Controls</h2>
-                <p>Настройте актив и тип диаграммы. Визуализация обновляется через query string, так что ссылкой можно делиться.</p>
-            </div>
-
-            <form class="controls" method="get" action="/">
-                <div class="field">
-                    <label for="coin">Asset</label>
-                    <select id="coin" name="coin">
-                        {% for coin in coins %}
-                        <option value="{{ coin }}" {% if coin == selected_coin %}selected{% endif %}>{{ coin }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-
-                <div class="field">
-                    <label for="metric">Metric</label>
-                    <select id="metric" name="metric">
-                        {% for metric_key, metric in metrics.items() %}
-                        <option value="{{ metric_key }}" {% if metric_key == selected_metric %}selected{% endif %}>{{ metric["label"] }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-
-                <div class="field">
-                    <label for="rate">Risk-free rate (r)</label>
-                    <input type="number" id="rate" name="rate" step="0.005" min="0" max="1" value="{{ selected_rate }}">
-                </div>
-
-                <div class="field">
-                    <label>&nbsp;</label>
-                    <button type="submit">Update Chart</button>
-                </div>
-            </form>
-
-            {% if spot_price %}
-            <div class="stats">
-                <div class="stat">
-                    <span class="stat-label">Asset</span>
-                    <span class="stat-value">{{ selected_coin }}</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Spot</span>
-                    <span class="stat-value">{{ "%.2f"|format(spot_price) }}</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Metric</span>
-                    <span class="stat-value">{{ metrics[selected_metric]["label"] }}</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Risk-free Rate</span>
-                    <span class="stat-value">{{ selected_rate }}</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Expiries</span>
-                    <span class="stat-value">{{ expiries_count }}</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Visible Strikes</span>
-                    <span class="stat-value">{{ displayed_strikes }} / {{ total_strikes }}</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Window</span>
-                    <span class="stat-value">{{ "%.2f"|format(min_strike) }} - {{ "%.2f"|format(max_strike) }}</span>
-                </div>
-            </div>
-            {% endif %}
-
-            <div class="cache-bar">
-                <span class="dot {% if cache_status == 'error' %}error{% elif cache_status == 'warming' %}warm{% endif %}"></span>
-                <span>
-                    {% if cache_status == 'error' %}
-                        Кеш: ошибка последнего обновления
-                    {% elif cache_status == 'warming' %}
-                        Кеш: прогревается, показан снимок
-                    {% else %}
-                        Кеш обновлён в {{ cache_updated_str }} (UTC)
-                    {% endif %}
-                </span>
-                <span style="margin-left:auto; opacity:0.8;">Фоновое обновление каждые 3 мин</span>
-            </div>
-
-            {% if error %}
-            <div class="error">{{ error }}</div>
-            {% elif chart_html %}
-            <div class="metric-description">
-                <strong>{{ metrics[selected_metric]["label"] }}:</strong>
-                {{ metrics[selected_metric]["description"] }}
-            </div>
-            <div class="chart-wrap">
-                <div class="series-toolbar">
-                    <span class="series-toolbar-label">Серии:</span>
+            <section class="chart-area">
+                <div class="chart-toolbar">
+                    {% if chart_html %}
+                    <span class="chart-toolbar-label">Серии:</span>
                     <button type="button" id="show-all-series" class="series-btn">Показать все серии</button>
                     <button type="button" id="hide-all-series" class="series-btn">Очистить все серии</button>
+                    {% endif %}
+                    <button type="button" id="open-hint" class="chip">ⓘ Hint</button>
+                    <button type="button" id="open-glossary" class="chip">📖 Справочник греков</button>
                 </div>
+
+                {% if error %}
+                <div class="chart-card">
+                    <div class="error">{{ error }}</div>
+                </div>
+                {% elif chart_html %}
                 <div class="chart-card">{{ chart_html|safe }}</div>
-                <script>
-                // Сохраняем видимость серий (какие экспирации скрыты) в localStorage,
-                // чтобы выбор переживал смену метрики и безрисковой ставки в рамках
-                // одной монеты. Сервер, доменная логика и кеш НЕ меняются — состояние
-                // чисто клиентское. Ключом серии служит дата экспирации
-                // (trace.legendgrouptitle.text): она зависит только от монеты+экспирации
-                // и не меняется при переключении метрики.
-                (function () {
-                    var COIN = {{ selected_coin|tojson }};
-                    var STORAGE_KEY = "vsm_hidden_series";
+                {% else %}
+                <div class="chart-card">
+                    <div class="preloader">
+                        <div class="spinner"></div>
+                        <div>Загружаем данные с Bybit…</div>
+                    </div>
+                </div>
+                {% endif %}
+            </section>
+        </div>
+    </div>
 
-                    function readStore() {
-                        try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
-                        catch (e) { return {}; }
-                    }
-                    function writeStore(obj) {
-                        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch (e) {}
-                    }
-                    function getHidden() {
-                        return readStore()[COIN] || [];
-                    }
-                    function setHidden(arr) {
-                        var store = readStore();
-                        store[COIN] = arr;
-                        writeStore(store);
-                    }
-                    function clearHidden() {
-                        var store = readStore();
-                        delete store[COIN];
-                        writeStore(store);
-                    }
-
-                    function findGraphDiv() {
-                        // Plotly помечает корневой div графика классом js-plotly-plot.
-                        return document.querySelector('.js-plotly-plot');
-                    }
-
-                    function seriesKey(trace) {
-                        // Стабильный идентификатор — чистая дата экспирации.
-                        if (trace && trace.legendgrouptitle && trace.legendgrouptitle.text) {
-                            return trace.legendgrouptitle.text;
-                        }
-                        return trace && trace.name ? trace.name : null;
-                    }
-
-                    // Флаг guarded, чтобы наш собственный restyle не порождал лишних
-                    // перезаписей localStorage через обработчик plotly_restyle.
-                    var applying = false;
-
-                    function applyState() {
-                        if (!window.Plotly) return;
-                        var gd = findGraphDiv();
-                        if (!gd || !gd.data) return;
-                        var hidden = {};
-                        getHidden().forEach(function (k) { hidden[k] = true; });
-                        var visible = gd.data.map(function (trace) {
-                            var key = seriesKey(trace);
-                            return key && hidden[key] ? "legendonly" : true;
-                        });
-                        applying = true;
-                        Plotly.restyle(gd, {visible: visible}).then(
-                            function () { applying = false; },
-                            function () { applying = false; }
-                        );
-                    }
-
-                    function captureState() {
-                        var gd = findGraphDiv();
-                        if (!gd || !gd.data) return;
-                        var hidden = gd.data
-                            .filter(function (trace) { return trace.visible === "legendonly"; })
-                            .map(seriesKey)
-                            .filter(function (k) { return !!k; });
-                        setHidden(hidden);
-                    }
-
-                    function whenReady(cb) {
-                        if (window.Plotly && findGraphDiv()) { cb(); return; }
-                        var tries = 0;
-                        var timer = setInterval(function () {
-                            tries++;
-                            if (window.Plotly && findGraphDiv()) { clearInterval(timer); cb(); }
-                            else if (tries > 50) { clearInterval(timer); }
-                        }, 100);
-                    }
-
-                    whenReady(function () {
-                        applyState();
-
-                        var gd = findGraphDiv();
-                        if (gd && typeof gd.on === "function") {
-                            gd.on('plotly_restyle', function () {
-                                if (applying) return;
-                                captureState();
-                            });
-                        }
-
-                        var showAll = document.getElementById('show-all-series');
-                        var hideAll = document.getElementById('hide-all-series');
-
-                        if (showAll) showAll.addEventListener('click', function () {
-                            if (!window.Plotly) return;
-                            var g = findGraphDiv();
-                            if (!g) return;
-                            applying = true;
-                            Plotly.restyle(g, {visible: true}).then(
-                                function () { applying = false; clearHidden(); },
-                                function () { applying = false; }
-                            );
-                        });
-
-                        if (hideAll) hideAll.addEventListener('click', function () {
-                            if (!window.Plotly) return;
-                            var g = findGraphDiv();
-                            if (!g) return;
-                            applying = true;
-                            Plotly.restyle(g, {visible: 'legendonly'}).then(
-                                function () { applying = false; captureState(); },
-                                function () { applying = false; }
-                            );
-                        });
-                    });
-                })();
-                </script>
+    <!-- Hint: оверлей-модалка вместо нижнего текстового блока. -->
+    <div class="modal-overlay" id="hint-modal" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="hint-title">
+            <div class="modal-head">
+                <h2 id="hint-title">Подсказка по графику</h2>
+                <button type="button" class="modal-close" data-close-modal aria-label="Закрыть">×</button>
             </div>
-            {% else %}
-            <div class="preloader">
-                <div class="spinner"></div>
-                <div>Загружаем данные с Bybit…</div>
+            <div class="modal-body">
+                <p>
+                    Hover по точкам показывает полный контекст опциона: выбранную метрику, IV, theta,
+                    delta, gamma, vega, а также высшие греки (vanna, volga, speed, charm, ultima),
+                    которые считаются локально по модели Блэка — Шоулза с указанной безрисковой ставкой.
+                    Для каждой экспирации используется одна непрерывная линия.
+                </p>
             </div>
-            {% endif %}
+        </div>
+    </div>
 
-            <div class="hint">
-                Hover по точкам показывает полный контекст опциона: выбранную метрику, IV, theta,
-                delta, gamma, vega, а также высшие греки (vanna, volga, speed, charm, ultima),
-                которые считаются локально по модели Блэка — Шоулза с указанной безрисковой ставкой.
-                Для каждой экспирации используется одна непрерывная линия.
+    <!-- Glossary: оверлей-модалка вместо нижней раскрывающейся таблицы. -->
+    <div class="modal-overlay" id="glossary-modal" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="glossary-title">
+            <div class="modal-head">
+                <h2 id="glossary-title">Справочник греков</h2>
+                <button type="button" class="modal-close" data-close-modal aria-label="Закрыть">×</button>
             </div>
-
-            <details class="glossary panel-head">
-                <summary class="glossary-summary">
-                    <h2><span class="caret">▶</span> Справочник греков</h2>
-                </summary>
-                <p style="margin: 6px 0 0; color: var(--muted); font-size: 0.92rem;">
+            <div class="modal-body">
+                <p>
                     Метрики, доступные в выпадающем списке. <strong>API</strong> — значение берётся
                     напрямую из ответа Bybit; <strong>BS</strong> — считается локально по модели
                     Блэка — Шоулза (Bybit эти греки не отдаёт); <strong>derived</strong> —
@@ -878,8 +769,188 @@
                         </tbody>
                     </table>
                 </div>
-            </details>
-        </section>
-    </main>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // Автообновление: при изменении любого параметра форма сабмитится сама,
+    // сервер отдаёт готовый HTML из кеша (мгновенно при cache-hit). Кнопка
+    // "Update Chart" больше не нужна и удалена из разметки.
+    (function () {
+        var form = document.getElementById('controls-form');
+        if (!form) return;
+        function submitForm() {
+            if (typeof form.requestSubmit === 'function') {
+                form.requestSubmit();
+            } else {
+                form.submit();
+            }
+        }
+        ['coin', 'metric'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('change', submitForm);
+        });
+        // Для number input используем change (а не input), чтобы не перезагружать
+        // страницу на каждое нажатие клавиши — сработает на Enter/blur/стрелках.
+        var rate = document.getElementById('rate');
+        if (rate) rate.addEventListener('change', submitForm);
+    })();
+
+    // Модалки hint/glossary: открытие чип-кнопками, закрытие по крестику/backdrop/Esc.
+    (function () {
+        function open(id) {
+            var m = document.getElementById(id);
+            if (m) m.hidden = false;
+        }
+        function close(modal) {
+            if (!modal) return;
+            modal.hidden = true;
+        }
+        document.querySelectorAll('.modal-overlay').forEach(function (overlay) {
+            overlay.addEventListener('click', function (e) {
+                // Клик по тёмному фону (не по самой модалке) закрывает.
+                if (e.target === overlay) close(overlay);
+            });
+            overlay.querySelectorAll('[data-close-modal]').forEach(function (btn) {
+                btn.addEventListener('click', function () { close(overlay); });
+            });
+        });
+        var hintBtn = document.getElementById('open-hint');
+        if (hintBtn) hintBtn.addEventListener('click', function () { open('hint-modal'); });
+        var glossaryBtn = document.getElementById('open-glossary');
+        if (glossaryBtn) glossaryBtn.addEventListener('click', function () { open('glossary-modal'); });
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal-overlay:not([hidden])').forEach(close);
+            }
+        });
+    })();
+    </script>
+
+    <script>
+    // Сохраняем видимость серий (какие экспирации скрыты) в localStorage,
+    // чтобы выбор переживал смену метрики и безрисковой ставки в рамках
+    // одной монеты. Сервер, доменная логика и кеш НЕ меняются — состояние
+    // чисто клиентское. Ключом серии служит дата экспирации
+    // (trace.legendgrouptitle.text): она зависит только от монеты+экспирации
+    // и не меняется при переключении метрики.
+    (function () {
+        var COIN = {{ selected_coin|tojson }};
+        var STORAGE_KEY = "vsm_hidden_series";
+
+        function readStore() {
+            try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+            catch (e) { return {}; }
+        }
+        function writeStore(obj) {
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch (e) {}
+        }
+        function getHidden() {
+            return readStore()[COIN] || [];
+        }
+        function setHidden(arr) {
+            var store = readStore();
+            store[COIN] = arr;
+            writeStore(store);
+        }
+        function clearHidden() {
+            var store = readStore();
+            delete store[COIN];
+            writeStore(store);
+        }
+
+        function findGraphDiv() {
+            // Plotly помечает корневой div графика классом js-plotly-plot.
+            return document.querySelector('.js-plotly-plot');
+        }
+
+        function seriesKey(trace) {
+            // Стабильный идентификатор — чистая дата экспирации.
+            if (trace && trace.legendgrouptitle && trace.legendgrouptitle.text) {
+                return trace.legendgrouptitle.text;
+            }
+            return trace && trace.name ? trace.name : null;
+        }
+
+        // Флаг guarded, чтобы наш собственный restyle не порождал лишних
+        // перезаписей localStorage через обработчик plotly_restyle.
+        var applying = false;
+
+        function applyState() {
+            if (!window.Plotly) return;
+            var gd = findGraphDiv();
+            if (!gd || !gd.data) return;
+            var hidden = {};
+            getHidden().forEach(function (k) { hidden[k] = true; });
+            var visible = gd.data.map(function (trace) {
+                var key = seriesKey(trace);
+                return key && hidden[key] ? "legendonly" : true;
+            });
+            applying = true;
+            Plotly.restyle(gd, {visible: visible}).then(
+                function () { applying = false; },
+                function () { applying = false; }
+            );
+        }
+
+        function captureState() {
+            var gd = findGraphDiv();
+            if (!gd || !gd.data) return;
+            var hidden = gd.data
+                .filter(function (trace) { return trace.visible === "legendonly"; })
+                .map(seriesKey)
+                .filter(function (k) { return !!k; });
+            setHidden(hidden);
+        }
+
+        function whenReady(cb) {
+            if (window.Plotly && findGraphDiv()) { cb(); return; }
+            var tries = 0;
+            var timer = setInterval(function () {
+                tries++;
+                if (window.Plotly && findGraphDiv()) { clearInterval(timer); cb(); }
+                else if (tries > 50) { clearInterval(timer); }
+            }, 100);
+        }
+
+        whenReady(function () {
+            applyState();
+
+            var gd = findGraphDiv();
+            if (gd && typeof gd.on === "function") {
+                gd.on('plotly_restyle', function () {
+                    if (applying) return;
+                    captureState();
+                });
+            }
+
+            var showAll = document.getElementById('show-all-series');
+            var hideAll = document.getElementById('hide-all-series');
+
+            if (showAll) showAll.addEventListener('click', function () {
+                if (!window.Plotly) return;
+                var g = findGraphDiv();
+                if (!g) return;
+                applying = true;
+                Plotly.restyle(g, {visible: true}).then(
+                    function () { applying = false; clearHidden(); },
+                    function () { applying = false; }
+                );
+            });
+
+            if (hideAll) hideAll.addEventListener('click', function () {
+                if (!window.Plotly) return;
+                var g = findGraphDiv();
+                if (!g) return;
+                applying = true;
+                Plotly.restyle(g, {visible: 'legendonly'}).then(
+                    function () { applying = false; captureState(); },
+                    function () { applying = false; }
+                );
+            });
+        });
+    })();
+    </script>
 </body>
 </html>
