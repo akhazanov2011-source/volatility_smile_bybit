@@ -600,8 +600,9 @@ def build_figure(
             bordercolor="rgba(207,214,228,0.8)",
             borderwidth=1,
         ),
-        width=1200,
-        height=700,
+        autosize=True,
+        width=None,
+        height=None,
         margin=dict(l=60, r=200, t=100, b=60),
     )
     return fig
@@ -717,8 +718,14 @@ def _build_chart_entry(selected_coin, selected_metric, risk_free_rate=DEFAULT_RA
             max_strike,
             selected_metric,
         )
-        fig.update_layout(width=None, height=720, margin=dict(l=50, r=50, t=100, b=50))
-        chart_html = fig.to_html(full_html=False, include_plotlyjs="cdn")
+        fig.update_layout(autosize=True, width=None, height=None, margin=dict(l=50, r=50, t=60, b=40))
+        chart_html = fig.to_html(
+            full_html=False,
+            include_plotlyjs="cdn",
+            config={"responsive": True},
+            default_width="100%",
+            default_height="100%",
+        )
 
         return {
             "chart_html": chart_html,

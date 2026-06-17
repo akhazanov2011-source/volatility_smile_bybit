@@ -214,7 +214,7 @@ def test_index_template_renders_series_toolbar(monkeypatch):
     with app.app.test_request_context("/?coin=BTC&metric=iv"):
         html = app.index()
 
-    assert 'class="series-toolbar"' in html
+    assert 'class="chart-toolbar"' in html
     assert 'id="show-all-series"' in html
     assert 'id="hide-all-series"' in html
     # JS, отвечающий за сохранение видимости серий в localStorage.
@@ -222,7 +222,8 @@ def test_index_template_renders_series_toolbar(monkeypatch):
 
 
 def test_index_template_no_toolbar_without_chart(monkeypatch):
-    """Когда chart_html отсутствует (ошибка/прогрев), тулбар не должен рендериться."""
+    """Когда chart_html отсутствует (ошибка/прогрев), кнопки управления сериями не рендерятся.
+    Чипы Hint/Glossary остаются доступными всегда."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
     monkeypatch.setattr(
         app,
@@ -244,7 +245,12 @@ def test_index_template_no_toolbar_without_chart(monkeypatch):
     with app.app.test_request_context("/?coin=BTC&metric=iv"):
         html = app.index()
 
-    assert 'class="series-toolbar"' not in html
+    # Кнопок управления сериями нет — графика нет.
+    assert 'id="show-all-series"' not in html
+    assert 'id="hide-all-series"' not in html
+    # Чипы справки доступны в любом случае.
+    assert 'id="open-hint"' in html
+    assert 'id="open-glossary"' in html
 
 
 def test_index_template_renders_metric_description(monkeypatch):
