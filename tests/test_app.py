@@ -172,6 +172,100 @@ def test_fetch_and_prepare_data_zero_iv_returns_none_greeks():
             assert item[key] is None, f"{key} должен быть None при markIv=0"
 
 
+def test_build_figure_mark_price_uses_otm_points_only():
+    """Mark Price не должен склеивать Call/Put ITM-мостик в центре."""
+    expiry = datetime.now() + timedelta(days=30)
+    by_expiry = {
+        expiry: {
+            "Call": [
+                {
+                    "symbol": "BTC-TEST-1000-C-USDT",
+                    "strike": 1000.0,
+                    "mark_price": "120",
+                    "iv": 60.0,
+                    "delta": "0.8",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -0.8,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": False,
+                },
+                {
+                    "symbol": "BTC-TEST-1100-C-USDT",
+                    "strike": 1100.0,
+                    "mark_price": "30",
+                    "iv": 60.0,
+                    "delta": "0.4",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -3.3,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": True,
+                },
+            ],
+            "Put": [
+                {
+                    "symbol": "BTC-TEST-1000-P-USDT",
+                    "strike": 1000.0,
+                    "mark_price": "25",
+                    "iv": 60.0,
+                    "delta": "-0.4",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -4.0,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": True,
+                },
+                {
+                    "symbol": "BTC-TEST-1100-P-USDT",
+                    "strike": 1100.0,
+                    "mark_price": "115",
+                    "iv": 60.0,
+                    "delta": "-0.8",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -0.9,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": False,
+                },
+            ],
+        }
+    }
+
+    fig = app.build_figure(
+        "BTC",
+        1050.0,
+        by_expiry,
+        [expiry],
+        900.0,
+        1200.0,
+        "mark_price",
+    )
+
+    assert list(fig.data[0].x) == [1000.0, 1100.0]
+    assert list(fig.data[0].y) == [25.0, 30.0]
+
+
 # --------------------------------------------------------------------------------------
 # Кеш по 3-туплю (без сети) — через mock refresh_combo
 # --------------------------------------------------------------------------------------

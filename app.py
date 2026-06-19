@@ -96,7 +96,8 @@ SUPPORTED_METRICS = {
         "description": (
             "Маркировочная цена опциона (поле markPrice из API Bybit). "
             "Это биржевая оценка текущей справедливой цены, которую Bybit "
-            "транслирует вместе с остальными параметрами тикера."
+            "транслирует вместе с остальными параметрами тикера. На графике "
+            "показываются OTM-премии: Put ниже spot и Call выше spot."
         ),
     },
     "delta": {
@@ -506,6 +507,8 @@ def build_figure(
         calls = sorted(by_expiry[expiry]["Call"], key=lambda item: item["strike"])
         puts = sorted(by_expiry[expiry]["Put"], key=lambda item: item["strike"])
         smile_points = sorted(calls + puts, key=lambda item: item["strike"])
+        if selected_metric == "mark_price":
+            smile_points = [item for item in smile_points if item["is_otm"]]
         unique_points = []
         seen = set()
         for item in smile_points:
