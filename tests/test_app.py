@@ -28,12 +28,12 @@ import app
 # --------------------------------------------------------------------------------------
 
 def test_normalize_metric_accepts_new_greeks():
-    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "theo_price"):
+    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima"):
         assert app.normalize_metric(key) == key
 
 
 def test_normalize_metric_keeps_existing():
-    for key in ("iv", "theta", "theta_pct"):
+    for key in ("iv", "theta", "theta_pct", "mark_price"):
         assert app.normalize_metric(key) == key
 
 
@@ -73,7 +73,7 @@ def test_all_metrics_have_required_fields():
 
 
 def test_expected_metric_keys_present():
-    expected = {"iv", "theta", "theta_pct", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "theo_price"}
+    expected = {"iv", "theta", "theta_pct", "mark_price", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima"}
     assert expected == set(app.SUPPORTED_METRICS.keys())
 
 
@@ -121,10 +121,11 @@ def test_fetch_and_prepare_data_returns_higher_greeks():
         assert item["vega"] == "20.0"
         assert item["gamma"] == "0.00002"
         # Новые высшие греки — должны присутствовать (float или None)
-        for key in ("vanna", "volga", "speed", "charm", "ultima", "theo_price"):
+        for key in ("vanna", "volga", "speed", "charm", "ultima"):
             assert key in item, f"Ключ {key} отсутствует в item"
             # При T > 0, σ > 0, S > 0 — должны быть числом, не None
             assert item[key] is not None, f"{key} не должен быть None для валидного опциона"
+        assert item["mark_price"] == "1000"
 
 
 def test_fetch_and_prepare_data_higher_greeks_change_with_rate():
@@ -167,9 +168,102 @@ def test_fetch_and_prepare_data_zero_iv_returns_none_greeks():
     expiry = sorted_expiries[0]
     for opt_type in ("Call", "Put"):
         item = by_expiry[expiry][opt_type][0]
-        assert item["theo_price"] is None
         for key in ("vanna", "volga", "speed", "charm", "ultima"):
             assert item[key] is None, f"{key} должен быть None при markIv=0"
+
+
+def test_build_figure_mark_price_uses_otm_points_only():
+    """Mark Price не должен склеивать Call/Put ITM-мостик в центре."""
+    expiry = datetime.now() + timedelta(days=30)
+    by_expiry = {
+        expiry: {
+            "Call": [
+                {
+                    "symbol": "BTC-TEST-1000-C-USDT",
+                    "strike": 1000.0,
+                    "mark_price": "120",
+                    "iv": 60.0,
+                    "delta": "0.8",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -0.8,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": False,
+                },
+                {
+                    "symbol": "BTC-TEST-1100-C-USDT",
+                    "strike": 1100.0,
+                    "mark_price": "30",
+                    "iv": 60.0,
+                    "delta": "0.4",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -3.3,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": True,
+                },
+            ],
+            "Put": [
+                {
+                    "symbol": "BTC-TEST-1000-P-USDT",
+                    "strike": 1000.0,
+                    "mark_price": "25",
+                    "iv": 60.0,
+                    "delta": "-0.4",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -4.0,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": True,
+                },
+                {
+                    "symbol": "BTC-TEST-1100-P-USDT",
+                    "strike": 1100.0,
+                    "mark_price": "115",
+                    "iv": 60.0,
+                    "delta": "-0.8",
+                    "gamma": "0.1",
+                    "theta": "-1",
+                    "theta_pct": -0.9,
+                    "vega": "2",
+                    "vanna": 0.1,
+                    "volga": 0.1,
+                    "speed": 0.1,
+                    "charm": 0.1,
+                    "ultima": 0.1,
+                    "is_otm": False,
+                },
+            ],
+        }
+    }
+
+    fig = app.build_figure(
+        "BTC",
+        1050.0,
+        by_expiry,
+        [expiry],
+        900.0,
+        1200.0,
+        "mark_price",
+    )
+
+    assert list(fig.data[0].x) == [1000.0, 1100.0]
+    assert list(fig.data[0].y) == [25.0, 30.0]
 
 
 # --------------------------------------------------------------------------------------

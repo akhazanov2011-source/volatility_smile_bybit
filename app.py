@@ -88,6 +88,18 @@ SUPPORTED_METRICS = {
             "стоимости опциона — удобная метрика для сравнения опционов разной цены."
         ),
     },
+    "mark_price": {
+        "label": "Mark Price",
+        "axis_title": "Mark Price",
+        "value_key": "mark_price",
+        "source": "api",
+        "description": (
+            "Маркировочная цена опциона (поле markPrice из API Bybit). "
+            "Это биржевая оценка текущей справедливой цены, которую Bybit "
+            "транслирует вместе с остальными параметрами тикера. На графике "
+            "показываются OTM-премии: Put ниже spot и Call выше spot."
+        ),
+    },
     "delta": {
         "label": "Delta",
         "axis_title": "Delta",
@@ -168,19 +180,6 @@ SUPPORTED_METRICS = {
             "волатильности. Характеризует стабильность волги при изменениях IV. "
             "Считается локально по модели Блэка — Шоулза. Полезна при торговле "
             "весьма далёкими от денег опционами (wing options)."
-        ),
-    },
-    "theo_price": {
-        "label": "Theoretical Price",
-        "axis_title": "Theoretical Price",
-        "value_key": "theo_price",
-        "source": "bs",
-        "description": (
-            "Теоретическая цена опциона по модели Блэка — Шоулза. "
-            "Рассчитывается локально с использованием spot, страйка, времени до "
-            "экспирации, безрисковой ставки и подразумеваемой волатильности (markIv) "
-            "из API Bybit. Позволяет сравнить рыночную цену (mark price) с "
-            "«справедливой» ценой по модели."
         ),
     },
 }
@@ -430,16 +429,6 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
         charm_val = bs_greeks.charm(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
         ultima_val = bs_greeks.ultima(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
 
-        # Теоретическая цена по модели Блэка — Шоулза (call/put выбирается по типу).
-        if opt_type == "Call":
-            theo_price_val = bs_greeks.bs_call_price(
-                spot_price, strike, time_to_expiry, risk_free_rate, sigma
-            )
-        else:
-            theo_price_val = bs_greeks.bs_put_price(
-                spot_price, strike, time_to_expiry, risk_free_rate, sigma
-            )
-
         if expiry not in raw_by_expiry:
             raw_by_expiry[expiry] = {"Call": [], "Put": []}
 
@@ -458,7 +447,6 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
                 "speed": speed_val,
                 "charm": charm_val,
                 "ultima": ultima_val,
-                "theo_price": theo_price_val,
                 "symbol": symbol,
                 "is_otm": (
                     (opt_type == "Call" and strike > spot_price)
@@ -519,6 +507,8 @@ def build_figure(
         calls = sorted(by_expiry[expiry]["Call"], key=lambda item: item["strike"])
         puts = sorted(by_expiry[expiry]["Put"], key=lambda item: item["strike"])
         smile_points = sorted(calls + puts, key=lambda item: item["strike"])
+        if selected_metric == "mark_price":
+            smile_points = [item for item in smile_points if item["is_otm"]]
         unique_points = []
         seen = set()
         for item in smile_points:
