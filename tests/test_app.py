@@ -28,12 +28,12 @@ import app
 # --------------------------------------------------------------------------------------
 
 def test_normalize_metric_accepts_new_greeks():
-    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "theo_price"):
+    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima"):
         assert app.normalize_metric(key) == key
 
 
 def test_normalize_metric_keeps_existing():
-    for key in ("iv", "theta", "theta_pct"):
+    for key in ("iv", "theta", "theta_pct", "mark_price"):
         assert app.normalize_metric(key) == key
 
 
@@ -73,7 +73,7 @@ def test_all_metrics_have_required_fields():
 
 
 def test_expected_metric_keys_present():
-    expected = {"iv", "theta", "theta_pct", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "theo_price"}
+    expected = {"iv", "theta", "theta_pct", "mark_price", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima"}
     assert expected == set(app.SUPPORTED_METRICS.keys())
 
 
@@ -121,10 +121,11 @@ def test_fetch_and_prepare_data_returns_higher_greeks():
         assert item["vega"] == "20.0"
         assert item["gamma"] == "0.00002"
         # Новые высшие греки — должны присутствовать (float или None)
-        for key in ("vanna", "volga", "speed", "charm", "ultima", "theo_price"):
+        for key in ("vanna", "volga", "speed", "charm", "ultima"):
             assert key in item, f"Ключ {key} отсутствует в item"
             # При T > 0, σ > 0, S > 0 — должны быть числом, не None
             assert item[key] is not None, f"{key} не должен быть None для валидного опциона"
+        assert item["mark_price"] == "1000"
 
 
 def test_fetch_and_prepare_data_higher_greeks_change_with_rate():
@@ -167,7 +168,6 @@ def test_fetch_and_prepare_data_zero_iv_returns_none_greeks():
     expiry = sorted_expiries[0]
     for opt_type in ("Call", "Put"):
         item = by_expiry[expiry][opt_type][0]
-        assert item["theo_price"] is None
         for key in ("vanna", "volga", "speed", "charm", "ultima"):
             assert item[key] is None, f"{key} должен быть None при markIv=0"
 
