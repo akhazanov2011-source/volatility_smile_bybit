@@ -172,6 +172,34 @@ def test_fetch_and_prepare_data_zero_iv_returns_none_greeks():
             assert item[key] is None, f"{key} должен быть None при markIv=0"
 
 
+def test_build_hover_text_shows_bold_mark_price_after_strike():
+    item = {
+        "symbol": "BTC-TEST-60000-C-USDT",
+        "strike": 60000.0,
+        "mark_price": "123.45",
+        "iv": 60.0,
+        "delta": "0.55",
+        "gamma": "0.00002",
+        "theta": "-5.0",
+        "theta_pct": -4.05,
+        "vega": "20.0",
+        "vanna": 0.1,
+        "volga": 0.2,
+        "speed": 0.3,
+        "charm": 0.4,
+        "ultima": 0.5,
+    }
+
+    hover_text = app.build_hover_text(item, "01 Jan 26", 30, "iv")
+
+    strike_idx = hover_text.index("Страйк: 60,000<br>")
+    mark_price_idx = hover_text.index("<b>Mark Price: 123.45</b><br>")
+    iv_idx = hover_text.index("IV: 60.00%<br>")
+
+    assert strike_idx < mark_price_idx < iv_idx
+    assert hover_text.count("Mark Price: 123.45") == 1
+
+
 def test_build_figure_mark_price_uses_otm_points_only():
     """Mark Price не должен склеивать Call/Put ITM-мостик в центре."""
     expiry = datetime.now() + timedelta(days=30)
