@@ -19,6 +19,11 @@ CACHE_TTL_SECONDS = 60
 REQUEST_MAX_ATTEMPTS = 4
 REQUEST_BACKOFF_BASE_SECONDS = 0.6
 REQUEST_BACKOFF_MAX_SECONDS = 6.0
+# Верхняя граница суммарного времени всех попыток запроса к Bybit. Без неё
+# 4 попытки × 10с timeout + backoff могут занять ~45с, что приводило к
+# WORKER TIMEOUT у gunicorn. Дедлайн гарантирует, что даже фоновый прогрев
+# не зависнет надолго.
+REQUEST_MAX_TOTAL_SECONDS = 25
 
 # Фоновое кеширование: как часто воркер полностью обновляет все (coin, metric).
 CACHE_REFRESH_INTERVAL_SECONDS = 180
@@ -196,6 +201,7 @@ app = Flask(__name__)
 
 def _requests_get_with_retry(url, *, params, timeout):
     last_exc = None
+    started = time.monotonic()
     for attempt in range(1, REQUEST_MAX_ATTEMPTS + 1):
         try:
             response = requests.get(url, params=params, timeout=timeout)
@@ -204,6 +210,16 @@ def _requests_get_with_retry(url, *, params, timeout):
         except requests.RequestException as exc:
             last_exc = exc
             if attempt >= REQUEST_MAX_ATTEMPTS:
+                break
+            elapsed = time.monotonic() - started
+            if elapsed >= REQUEST_MAX_TOTAL_SECONDS:
+                logger.warning(
+                    "Bybit request aborted after %.1fs deadline (attempt %s/%s): %s",
+                    elapsed,
+                    attempt,
+                    REQUEST_MAX_ATTEMPTS,
+                    exc,
+                )
                 break
             backoff = min(
                 REQUEST_BACKOFF_MAX_SECONDS,
@@ -668,6 +684,12 @@ _cache_lock = threading.Lock()
 _worker_started = False
 _worker_start_lock = threading.Lock()
 
+# Тройки (coin, metric, rate), которые прямо сейчас греются в фоне.
+# Предотвращает дублирование параллельных фоновых запросов одной и той же пары
+# при множественных cache-miss (например, несколько пользователей одновременно).
+_refreshing = set()
+_refreshing_lock = threading.Lock()
+
 
 def _all_combos():
     # Фоновый воркер греет только дефолтную ставку; нестандартные ставки
@@ -767,6 +789,53 @@ def refresh_combo(selected_coin, selected_metric, risk_free_rate=DEFAULT_RATE):
     return entry
 
 
+def _warming_entry():
+    """Заглушка для cache-miss: мгновенно возвращается в маршруте index(),
+    чтобы запрос не висел на синхронном сетевом фетче. Шаблон рисует спиннер
+    и статус «Кеш: прогревается» для cache_status == 'warming'."""
+    return {
+        "chart_html": None,
+        "error": None,
+        "spot_price": None,
+        "expiries_count": 0,
+        "min_strike": None,
+        "max_strike": None,
+        "displayed_strikes": 0,
+        "total_strikes": 0,
+        "updated_at": None,
+        "status": "warming",
+    }
+
+
+def _maybe_refresh_async(selected_coin, selected_metric, risk_free_rate):
+    """Запускает прогрев пары в fire-and-forget daemon-потоке ровно один раз:
+    если пара уже греется, ничего не делает. Это гарантирует, что поток
+    запросов не блокируется на сети — только ставит задачу в фон."""
+    key = (selected_coin, selected_metric, risk_free_rate)
+    with _refreshing_lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+
+    def _runner():
+        try:
+            refresh_combo(selected_coin, selected_metric, risk_free_rate)
+        except Exception:
+            logger.exception(
+                "Async refresh unexpectedly failed for %s/%s", selected_coin, selected_metric
+            )
+        finally:
+            with _refreshing_lock:
+                _refreshing.discard(key)
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"volatility-refresh-{selected_coin}-{selected_metric}",
+        daemon=True,
+    )
+    thread.start()
+
+
 def _background_worker_loop():
     while True:
         for coin, metric, rate in _all_combos():
@@ -820,8 +889,11 @@ def index():
 
     entry = _cache_get(selected_coin, selected_metric, selected_rate)
     if entry is None:
-        # Холодный старт / промах кеша — синхронно обновляем именно эту пару.
-        entry = refresh_combo(selected_coin, selected_metric, selected_rate)
+        # Cache-miss / холодный старт: НЕ виснем на синхронном фетче (~45с в
+        # худшем случае → приводило к WORKER TIMEOUT). Мгновенно отдаём
+        # страницу-заглушку «прогрев кеша», а саму пару греем в фоне.
+        _maybe_refresh_async(selected_coin, selected_metric, selected_rate)
+        entry = _warming_entry()
 
     updated_at = entry.get("updated_at")
     updated_str = (

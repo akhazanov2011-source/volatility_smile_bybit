@@ -952,5 +952,20 @@
         });
     })();
     </script>
+    {% if cache_status == 'warming' %}
+    <script>
+        // Кеш ещё прогревается в фоновом потоке: автоматически перезагружаем
+        // страницу, чтобы показать график, как только пара будет готова.
+        // 4с — больше, чем типичный прогрев одной пары, но достаточно быстро,
+        // чтобы пользователь почти сразу увидел результат.
+        (function () {
+            var params = new URLSearchParams(window.location.search);
+            params.set('_t', Date.now().toString()); // обходим кеш браузера
+            setTimeout(function () {
+                window.location.search = params.toString();
+            }, 4000);
+        })();
+    </script>
+    {% endif %}
 </body>
 </html>
