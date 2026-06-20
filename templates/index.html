@@ -615,12 +615,6 @@
                                 {% endfor %}
                             </select>
                         </div>
-
-                        <div class="field">
-                            <label for="rate">Risk-free rate (r)</label>
-                            <input type="number" id="rate" name="rate" step="0.005" min="0" max="1" value="{{ selected_rate }}">
-                            <p class="auto-note">Применяется по Enter или при потере фокуса.</p>
-                        </div>
                     </form>
 
                     {% if spot_price %}
@@ -636,10 +630,6 @@
                         <div class="stat">
                             <span class="stat-label">Metric</span>
                             <span class="stat-value">{{ metrics[selected_metric]["label"] }}</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Risk-free Rate</span>
-                            <span class="stat-value">{{ selected_rate }}</span>
                         </div>
                         <div class="stat">
                             <span class="stat-label">Expiries</span>
@@ -720,7 +710,9 @@
                 <p>
                     Hover по точкам показывает полный контекст опциона: выбранную метрику, IV, theta,
                     delta, gamma, vega, а также высшие греки (vanna, volga, speed, charm, ultima),
-                    которые считаются локально по модели Блэка — Шоулза с указанной безрисковой ставкой.
+                    которые считаются локально по модели Блэка — Шоулза. Безрисковая ставка для каждого
+                    опциона определяется автоматически из implied cost-of-carry
+                    (r = ln(underlyingPrice / indexPrice) / T) и выводится отдельной строкой в тултипе.
                     Для каждой экспирации используется одна непрерывная линия.
                 </p>
             </div>
@@ -791,10 +783,6 @@
             var el = document.getElementById(id);
             if (el) el.addEventListener('change', submitForm);
         });
-        // Для number input используем change (а не input), чтобы не перезагружать
-        // страницу на каждое нажатие клавиши — сработает на Enter/blur/стрелках.
-        var rate = document.getElementById('rate');
-        if (rate) rate.addEventListener('change', submitForm);
     })();
 
     // Модалки hint/glossary: открытие чип-кнопками, закрытие по крестику/backdrop/Esc.

@@ -37,6 +37,7 @@ __all__ = [
     "speed",
     "charm",
     "ultima",
+    "implied_rate",
 ]
 
 # Количество секунд в юлианском году — для перевода времени до экспирации в годы.
@@ -199,3 +200,20 @@ def ultima(spot, strike, time_to_expiry, risk_free_rate, sigma):
 def _is_valid(spot, time_to_expiry, sigma):
     """Защита от вырожденных входов: все аргументы должны быть положительными."""
     return spot > 0 and time_to_expiry > 0 and sigma > 0
+
+
+def implied_rate(index_price, forward_price, time_to_expiry):
+    """Implied cost-of-carry из соотношения форвард/спот: r = ln(F/S)/T.
+
+    Для опционов на перпетуалы Bybit ``forward_price`` — это ``underlyingPrice``
+    (цена перпа), ``index_price`` — спот-индекс. Разница между ними отражает
+    накопленный carry (фандинг + стоимость займа базового актива) до экспирации.
+    Подстановка полученного ``r`` в spot-based Блэка — Шоулза даёт математический
+    эквивалент модели Black-76 (опционы на фьючерсы/перпетуалы).
+
+    Возвращает ``None`` при вырожденных входах (неположительные цены или T),
+    чтобы上层 мог откатиться к безопасному значению (``r = 0``).
+    """
+    if index_price <= 0 or forward_price <= 0 or time_to_expiry <= 0:
+        return None
+    return math.log(forward_price / index_price) / time_to_expiry

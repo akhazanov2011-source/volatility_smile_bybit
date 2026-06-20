@@ -208,3 +208,33 @@ def test_put_call_price_parity():
     c = bs.bs_call_price(S, K, T, r, sigma)
     p = bs.bs_put_price(S, K, T, r, sigma)
     assert (c - p) == pytest.approx(S - K * math.exp(-r * T))
+
+
+# --------------------------------------------------------------------------------------
+# implied_rate — implied cost-of-carry из соотношения форвард/спот
+# --------------------------------------------------------------------------------------
+
+def test_implied_rate_forward_equals_spot_is_zero():
+    """F = S → r = 0 (нет cost-of-carry)."""
+    assert bs.implied_rate(60000.0, 60000.0, 0.25) == pytest.approx(0.0)
+
+
+def test_implied_rate_premium_forward_is_positive():
+    """F > S → r > 0 (премия перпа / положительный carry)."""
+    r = bs.implied_rate(60000.0, 63000.0, 0.25)
+    assert r == pytest.approx(math.log(63000.0 / 60000.0) / 0.25)
+    assert r > 0.0
+
+
+def test_implied_rate_discount_forward_is_negative():
+    """F < S → r < 0 (дисконт / бэквордация)."""
+    r = bs.implied_rate(60000.0, 57000.0, 0.25)
+    assert r < 0.0
+
+
+def test_implied_rate_degenerate_inputs_return_none():
+    """Неположительные цены или T → None."""
+    assert bs.implied_rate(0.0, 60000.0, 0.25) is None
+    assert bs.implied_rate(60000.0, 0.0, 0.25) is None
+    assert bs.implied_rate(60000.0, 63000.0, 0.0) is None
+    assert bs.implied_rate(-1.0, 63000.0, 0.25) is None
