@@ -45,11 +45,12 @@ MONTH_MAP = {
 DEFAULT_COIN = "BTC"
 STRIKE_COVERAGE_RATIO = 0.7
 
-# Безрисковая ставка по умолчанию (крипто-конвенция: r = 0). Пользователь может
-# задать свою через query-param ?rate=, значение валидируется и клампится в [0, 1].
-DEFAULT_RATE = 0.0
-RATE_MIN = 0.0
-RATE_MAX = 1.0
+# Безрисковая ставка считается автоматически для каждого опциона как implied
+# cost-of-carry: r = ln(underlyingPrice / indexPrice) / T. FALLBACK_RATE
+# используется при вырожденных входах (пустой underlyingPrice, T → 0 и т.п.) —
+# крипто-конвенция r = 0. RATE_CLAMP ограничивает выбросы ±50% годовых.
+FALLBACK_RATE = 0.0
+RATE_CLAMP = 0.5
 
 # Метрики, доступные в выпадающем списке. ``source`` указывает происхождение
 # значения для справочника: ``api`` — берётся из ответа Bybit, ``bs`` — считается
@@ -350,17 +351,6 @@ def normalize_metric(value):
     return metric
 
 
-def normalize_rate(value):
-    """Парсит и клампит безрисковую ставку из query-param. Возвращает float в [RATE_MIN, RATE_MAX]."""
-    if value is None or value == "":
-        return DEFAULT_RATE
-    try:
-        rate = float(value)
-    except (TypeError, ValueError):
-        return DEFAULT_RATE
-    return max(RATE_MIN, min(RATE_MAX, rate))
-
-
 def calculate_theta_pct(theta_value, mark_price_value):
     theta_numeric = parse_numeric(theta_value)
     mark_price_numeric = parse_numeric(mark_price_value)
@@ -392,7 +382,7 @@ def get_strike_window(strikes, spot_price):
     return min(nearest_strikes), max(nearest_strikes), target_count
 
 
-def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_price, risk_free_rate=DEFAULT_RATE):
+def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_price):
     raw_by_expiry = {}
     now_dt = datetime.now()
 
@@ -422,6 +412,18 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
         time_to_expiry = seconds_to_expiry / bs_greeks.SECONDS_PER_YEAR if seconds_to_expiry > 0 else 0.0
         sigma = iv / 100.0
 
+        # Безрисковая ставка считается per-option из implied cost-of-carry:
+        # r = ln(forward/spot)/T, где forward = underlyingPrice (поле Bybit).
+        # Подстановка этого r в spot-based Блэка — Шоулза эквивалентна Black-76
+        # (модель для опционов на фьючерсы/перпетуалы). Клампим от выбросов.
+        forward_price = parse_numeric(ticker.get("underlyingPrice"))
+        r_raw = (
+            bs_greeks.implied_rate(spot_price, forward_price, time_to_expiry)
+            if forward_price is not None
+            else None
+        )
+        risk_free_rate = FALLBACK_RATE if r_raw is None else max(-RATE_CLAMP, min(RATE_CLAMP, r_raw))
+
         # Высшие греки (Bybit API их не отдаёт). При вырожденных входах получим None.
         vanna_val = bs_greeks.vanna(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
         volga_val = bs_greeks.volga(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
@@ -447,6 +449,7 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
                 "speed": speed_val,
                 "charm": charm_val,
                 "ultima": ultima_val,
+                "risk_free_rate": risk_free_rate,
                 "symbol": symbol,
                 "is_otm": (
                     (opt_type == "Call" and strike > spot_price)
@@ -637,6 +640,8 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     metric_str = _format_greek(metric_value)
     theta_pct_value = parse_numeric(item.get("theta_pct"))
     theta_pct_str = f"{theta_pct_value:.2f}%" if theta_pct_value is not None else "N/A"
+    r_value = parse_numeric(item.get("risk_free_rate"))
+    r_str = f"{r_value * 100:.2f}%" if r_value is not None else "N/A"
     return (
         f"<b>{item['symbol']}</b><br>"
         f"Экспирация: {label_date} ({days_to_expiry}д)<br>"
@@ -654,7 +659,8 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
         f"Volga: {_format_greek(item['volga'])}<br>"
         f"Speed: {_format_greek(item['speed'])}<br>"
         f"Charm: {_format_greek(item['charm'])}<br>"
-        f"Ultima: {_format_greek(item['ultima'])}"
+        f"Ultima: {_format_greek(item['ultima'])}<br>"
+        f"Risk-free Rate: {r_str}"
     )
 
 
@@ -682,27 +688,27 @@ _refreshing_lock = threading.Lock()
 
 
 def _all_combos():
-    # Фоновый воркер греет только дефолтную ставку; нестандартные ставки
-    # считаются по запросу (cache-miss → синхронный refresh_combo).
+    # Фоновый воркер греет все пары (coin, metric). Ставка считается per-option
+    # из underlyingPrice, поэтому не входит в ключ кеша.
     return [
-        (coin, metric, DEFAULT_RATE)
+        (coin, metric)
         for coin in SUPPORTED_COINS
         for metric in SUPPORTED_METRICS
     ]
 
 
-def _cache_get(coin, metric, rate):
+def _cache_get(coin, metric):
     with _cache_lock:
-        entry = _cache.get((coin, metric, rate))
+        entry = _cache.get((coin, metric))
         return dict(entry) if entry is not None else None
 
 
-def _cache_set(coin, metric, rate, entry):
+def _cache_set(coin, metric, entry):
     with _cache_lock:
-        _cache[(coin, metric, rate)] = entry
+        _cache[(coin, metric)] = entry
 
 
-def _build_chart_entry(selected_coin, selected_metric, risk_free_rate=DEFAULT_RATE):
+def _build_chart_entry(selected_coin, selected_metric):
     """Сетевой запрос + рендер. Никогда не бросает исключение наружу."""
     try:
         api_base_coin = get_coin_config(selected_coin)["api_base_coin"]
@@ -715,7 +721,7 @@ def _build_chart_entry(selected_coin, selected_metric, risk_free_rate=DEFAULT_RA
         total_strikes = len(strikes)
         min_strike, max_strike, displayed_strikes = get_strike_window(strikes, spot_price)
         _, by_expiry, sorted_expiries = fetch_and_prepare_data(
-            selected_coin, tickers, min_strike, max_strike, spot_price, risk_free_rate
+            selected_coin, tickers, min_strike, max_strike, spot_price
         )
         if not by_expiry:
             raise ValueError("Нет данных для построения графика в выбранном диапазоне.")
@@ -772,10 +778,10 @@ def _build_chart_entry(selected_coin, selected_metric, risk_free_rate=DEFAULT_RA
         }
 
 
-def refresh_combo(selected_coin, selected_metric, risk_free_rate=DEFAULT_RATE):
+def refresh_combo(selected_coin, selected_metric):
     """Собирает график для пары и кладёт в кеш. Возвращает запись кеша."""
-    entry = _build_chart_entry(selected_coin, selected_metric, risk_free_rate)
-    _cache_set(selected_coin, selected_metric, risk_free_rate, entry)
+    entry = _build_chart_entry(selected_coin, selected_metric)
+    _cache_set(selected_coin, selected_metric, entry)
     return entry
 
 
@@ -797,11 +803,11 @@ def _warming_entry():
     }
 
 
-def _maybe_refresh_async(selected_coin, selected_metric, risk_free_rate):
+def _maybe_refresh_async(selected_coin, selected_metric):
     """Запускает прогрев пары в fire-and-forget daemon-потоке ровно один раз:
     если пара уже греется, ничего не делает. Это гарантирует, что поток
     запросов не блокируется на сети — только ставит задачу в фон."""
-    key = (selected_coin, selected_metric, risk_free_rate)
+    key = (selected_coin, selected_metric)
     with _refreshing_lock:
         if key in _refreshing:
             return
@@ -809,7 +815,7 @@ def _maybe_refresh_async(selected_coin, selected_metric, risk_free_rate):
 
     def _runner():
         try:
-            refresh_combo(selected_coin, selected_metric, risk_free_rate)
+            refresh_combo(selected_coin, selected_metric)
         except Exception:
             logger.exception(
                 "Async refresh unexpectedly failed for %s/%s", selected_coin, selected_metric
@@ -828,9 +834,9 @@ def _maybe_refresh_async(selected_coin, selected_metric, risk_free_rate):
 
 def _background_worker_loop():
     while True:
-        for coin, metric, rate in _all_combos():
+        for coin, metric in _all_combos():
             try:
-                refresh_combo(coin, metric, rate)
+                refresh_combo(coin, metric)
             except Exception:
                 logger.exception(
                     "Background refresh unexpectedly failed for %s/%s", coin, metric
@@ -873,16 +879,15 @@ def index():
     if selected_coin not in SUPPORTED_COINS:
         selected_coin = DEFAULT_COIN
     selected_metric = normalize_metric(request.args.get("metric"))
-    selected_rate = normalize_rate(request.args.get("rate"))
 
     _ensure_worker_started()
 
-    entry = _cache_get(selected_coin, selected_metric, selected_rate)
+    entry = _cache_get(selected_coin, selected_metric)
     if entry is None:
         # Cache-miss / холодный старт: НЕ виснем на синхронном фетче (~45с в
         # худшем случае → приводило к WORKER TIMEOUT). Мгновенно отдаём
         # страницу-заглушку «прогрев кеша», а саму пару греем в фоне.
-        _maybe_refresh_async(selected_coin, selected_metric, selected_rate)
+        _maybe_refresh_async(selected_coin, selected_metric)
         entry = _warming_entry()
 
     updated_at = entry.get("updated_at")
@@ -898,7 +903,6 @@ def index():
         selected_coin=selected_coin,
         metrics=SUPPORTED_METRICS,
         selected_metric=selected_metric,
-        selected_rate=selected_rate,
         chart_html=entry.get("chart_html"),
         error=entry.get("error"),
         spot_price=entry.get("spot_price"),

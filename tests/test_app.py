@@ -24,7 +24,7 @@ import app
 
 
 # --------------------------------------------------------------------------------------
-# normalize_metric / normalize_rate
+# normalize_metric
 # --------------------------------------------------------------------------------------
 
 def test_normalize_metric_accepts_new_greeks():
@@ -41,23 +41,6 @@ def test_normalize_metric_rejects_unknown():
     assert app.normalize_metric("nonexistent") == app.DEFAULT_METRIC
     assert app.normalize_metric(None) == app.DEFAULT_METRIC
     assert app.normalize_metric("") == app.DEFAULT_METRIC
-
-
-def test_normalize_rate_default():
-    assert app.normalize_rate(None) == 0.0
-    assert app.normalize_rate("") == 0.0
-    assert app.normalize_rate("garbage") == 0.0
-
-
-def test_normalize_rate_parses_float():
-    assert app.normalize_rate("0.045") == 0.045
-    assert app.normalize_rate("0.1") == 0.1
-
-
-def test_normalize_rate_clamps_to_range():
-    assert app.normalize_rate("-0.5") == app.RATE_MIN
-    assert app.normalize_rate("2.0") == app.RATE_MAX
-    assert app.normalize_rate("1.5") == app.RATE_MAX
 
 
 # --------------------------------------------------------------------------------------
@@ -82,7 +65,8 @@ def test_expected_metric_keys_present():
 # --------------------------------------------------------------------------------------
 
 def _make_ticker(symbol, mark_iv="0.6", mark_price="1000", delta="0.55",
-                 gamma="0.00002", theta="-5.0", vega="20.0", index_price="60000"):
+                 gamma="0.00002", theta="-5.0", vega="20.0", index_price="60000",
+                 underlying_price=None):
     return {
         "symbol": symbol,
         "markIv": mark_iv,
@@ -92,6 +76,8 @@ def _make_ticker(symbol, mark_iv="0.6", mark_price="1000", delta="0.55",
         "theta": theta,
         "vega": vega,
         "indexPrice": index_price,
+        # underlying_price по умолчанию = spot → implied rate = 0.
+        "underlyingPrice": underlying_price if underlying_price is not None else index_price,
     }
 
 
@@ -108,7 +94,7 @@ def test_fetch_and_prepare_data_returns_higher_greeks():
     tickers = _make_mock_tickers()
     spot = 60000.0
     _, by_expiry, sorted_expiries = app.fetch_and_prepare_data(
-        "BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.0
+        "BTC", tickers, 59000.0, 61000.0, spot
     )
     assert len(sorted_expiries) == 1
     expiry = sorted_expiries[0]
@@ -125,27 +111,54 @@ def test_fetch_and_prepare_data_returns_higher_greeks():
             assert key in item, f"Ключ {key} отсутствует в item"
             # При T > 0, σ > 0, S > 0 — должны быть числом, не None
             assert item[key] is not None, f"{key} не должен быть None для валидного опциона"
+        # implied rate = ln(underlyingPrice/indexPrice)/T; при F=S → r=0
+        assert item["risk_free_rate"] == 0.0
         assert item["mark_price"] == "1000"
 
 
 def test_fetch_and_prepare_data_higher_greeks_change_with_rate():
-    """Высшие греки (кроме Charm при T→0) должны зависеть от безрисковой ставки."""
-    tickers = _make_mock_tickers()
+    """Высшие греки должны зависеть от безрисковой ставки, которая теперь
+    выводится из underlyingPrice (implied cost-of-carry)."""
     spot = 60000.0
-    _, by1, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.0)
-    _, by2, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.1)
+    # Два набора тикеров: один с F = S (r = 0), другой с премией перпа (r > 0).
+    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
+    tickers_flat = [
+        _make_ticker(f"BTC-{future}-60000-C-USDT", underlying_price="60000"),
+        _make_ticker(f"BTC-{future}-60000-P-USDT", underlying_price="60000"),
+    ]
+    tickers_premium = [
+        _make_ticker(f"BTC-{future}-60000-C-USDT", underlying_price="63000"),
+        _make_ticker(f"BTC-{future}-60000-P-USDT", underlying_price="63000"),
+    ]
+    _, by1, _ = app.fetch_and_prepare_data("BTC", tickers_flat, 59000.0, 61000.0, spot)
+    _, by2, _ = app.fetch_and_prepare_data("BTC", tickers_premium, 59000.0, 61000.0, spot)
 
     expiry = list(by1.keys())[0]
     item_r0 = by1[expiry]["Call"][0]
     item_r1 = by2[expiry]["Call"][0]
 
-    # Vanna/Charm чувствительны к r через d2; проверяем, что расчёт действительно
-    # использует ставку (значения должны различаться при заметной разнице r).
+    # Ставка считается как ln(F/S)/T. При F=S → r=0; при F=63000, S=60000, T≈0.246 → r>0.
+    assert item_r0["risk_free_rate"] == 0.0
+    assert item_r1["risk_free_rate"] > 0.0, "implied rate должен быть положительным при F > S"
+    # Charm чувствителен к r через d2; значения должны различаться.
     assert item_r0["charm"] != item_r1["charm"], "Charm должен зависеть от ставки r"
 
 
+def test_fetch_and_prepare_data_missing_underlying_price_falls_back():
+    """При отсутствии underlyingPrice ставка откатывается к FALLBACK_RATE (0)."""
+    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
+    tickers = [
+        _make_ticker(f"BTC-{future}-60000-C-USDT", underlying_price=""),
+        _make_ticker(f"BTC-{future}-60000-P-USDT", underlying_price=""),
+    ]
+    spot = 60000.0
+    _, by_expiry, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot)
+    expiry = list(by_expiry.keys())[0]
+    assert by_expiry[expiry]["Call"][0]["risk_free_rate"] == app.FALLBACK_RATE
+
+
 def test_fetch_and_prepare_data_default_rate_works():
-    """Без явной передачи rate используется DEFAULT_RATE и не падает."""
+    """Без underlyingPrice используется FALLBACK_RATE и не падает."""
     tickers = _make_mock_tickers()
     spot = 60000.0
     _, by_expiry, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot)
@@ -162,7 +175,7 @@ def test_fetch_and_prepare_data_zero_iv_returns_none_greeks():
     ]
     spot = 60000.0
     _, by_expiry, sorted_expiries = app.fetch_and_prepare_data(
-        "BTC", tickers, 59000.0, 61000.0, spot, risk_free_rate=0.0
+        "BTC", tickers, 59000.0, 61000.0, spot
     )
     assert len(sorted_expiries) == 1
     expiry = sorted_expiries[0]
@@ -188,6 +201,7 @@ def test_build_hover_text_shows_bold_mark_price_after_strike():
         "speed": 0.3,
         "charm": 0.4,
         "ultima": 0.5,
+        "risk_free_rate": 0.05,
     }
 
     hover_text = app.build_hover_text(item, "01 Jan 26", 30, "iv")
@@ -198,6 +212,8 @@ def test_build_hover_text_shows_bold_mark_price_after_strike():
 
     assert strike_idx < mark_price_idx < iv_idx
     assert hover_text.count("Mark Price: 123.45") == 1
+    # implied rate выводится в конце тултипа в процентах годовых.
+    assert "Risk-free Rate: 5.00%" in hover_text
 
 
 def test_build_figure_mark_price_uses_otm_points_only():
@@ -298,20 +314,20 @@ def test_build_figure_mark_price_uses_otm_points_only():
 # Кеш по 3-туплю (без сети) — через mock refresh_combo
 # --------------------------------------------------------------------------------------
 
-def test_cache_keyed_by_rate(monkeypatch):
-    """_cache_get/_cache_set должны различать записи по ставке."""
+def test_cache_keyed_by_coin_metric(monkeypatch):
+    """_cache_get/_cache_set различают записи по паре (coin, metric)."""
     monkeypatch.setattr(app, "get_tickers", lambda base_coin: _make_mock_tickers())
     monkeypatch.setattr(app, "get_spot_price", lambda tickers: 60000.0)
 
-    entry_a = app._cache_get("BTC", "iv", 0.0)
-    entry_b = app._cache_get("BTC", "iv", 0.05)
+    entry_a = app._cache_get("BTC", "iv")
+    entry_b = app._cache_get("BTC", "delta")
     # До заполнения обе None
     assert entry_a is None and entry_b is None
 
     # Заполняем одну — вторая остаётся None
-    app._cache_set("BTC", "iv", 0.0, {"status": "live", "updated_at": 0.0})
-    assert app._cache_get("BTC", "iv", 0.0) is not None
-    assert app._cache_get("BTC", "iv", 0.05) is None
+    app._cache_set("BTC", "iv", {"status": "live", "updated_at": 0.0})
+    assert app._cache_get("BTC", "iv") is not None
+    assert app._cache_get("BTC", "delta") is None
 
 
 # --------------------------------------------------------------------------------------
@@ -324,7 +340,7 @@ def test_index_template_renders_series_toolbar(monkeypatch):
     monkeypatch.setattr(
         app,
         "_cache_get",
-        lambda coin, metric, rate: {
+        lambda coin, metric: {
             "chart_html": "<div id=\"plot\"></div>",
             "error": None,
             "spot_price": 60000.0,
@@ -355,7 +371,7 @@ def test_index_template_no_toolbar_without_chart(monkeypatch):
     monkeypatch.setattr(
         app,
         "_cache_get",
-        lambda coin, metric, rate: {
+        lambda coin, metric: {
             "chart_html": None,
             "error": "Не удалось загрузить данные Bybit.",
             "spot_price": None,
@@ -386,7 +402,7 @@ def test_index_template_renders_metric_description(monkeypatch):
     monkeypatch.setattr(
         app,
         "_cache_get",
-        lambda coin, metric, rate: {
+        lambda coin, metric: {
             "chart_html": "<div id=\"plot\"></div>",
             "error": None,
             "spot_price": 60000.0,
@@ -414,7 +430,7 @@ def test_index_template_cache_updated_utc_label(monkeypatch):
     monkeypatch.setattr(
         app,
         "_cache_get",
-        lambda coin, metric, rate: {
+        lambda coin, metric: {
             "chart_html": "<div id=\"plot\"></div>",
             "error": None,
             "spot_price": 60000.0,
@@ -442,7 +458,7 @@ def test_index_cache_miss_returns_warming_and_does_not_refresh_sync(monkeypatch)
     """При cache-miss маршрут должен мгновенно вернуть заглушку 'warming' и
     поставить прогрев в фон, а не вызывать refresh_combo синхронно."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(app, "_cache_get", lambda coin, metric, rate: None)
+    monkeypatch.setattr(app, "_cache_get", lambda coin, metric: None)
 
     # refresh_combo ни при каких условиях не должен вызваться синхронно.
     refresh_calls = []
@@ -453,14 +469,14 @@ def test_index_cache_miss_returns_warming_and_does_not_refresh_sync(monkeypatch)
     async_calls = []
     monkeypatch.setattr(
         app, "_maybe_refresh_async",
-        lambda coin, metric, rate: async_calls.append((coin, metric, rate)),
+        lambda coin, metric: async_calls.append((coin, metric)),
     )
 
     with app.app.test_request_context("/?coin=BTC&metric=iv"):
         html = app.index()
 
     assert refresh_calls == [], "refresh_combo не должен вызываться синхронно при cache-miss"
-    assert async_calls == [("BTC", "iv", 0.0)], "должен запустить фоновый прогрев пары"
+    assert async_calls == [("BTC", "iv")], "должен запустить фоновый прогрев пары"
     # Шаблон рисует спиннер и метку прогрева.
     assert 'Кеш: прогревается' in html
     assert 'Загружаем данные с Bybit' in html
@@ -469,7 +485,7 @@ def test_index_cache_miss_returns_warming_and_does_not_refresh_sync(monkeypatch)
 def test_index_cache_miss_renders_autoreload_script(monkeypatch):
     """При status='warming' в страницу должен встраиваться JS автообновления."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(app, "_cache_get", lambda coin, metric, rate: None)
+    monkeypatch.setattr(app, "_cache_get", lambda coin, metric: None)
     monkeypatch.setattr(app, "_maybe_refresh_async", lambda *a, **k: None)
 
     with app.app.test_request_context("/?coin=BTC&metric=iv"):
@@ -488,21 +504,21 @@ def test_maybe_refresh_async_populates_cache(monkeypatch):
         app._cache.clear()
 
     # Пара ещё не в кеше.
-    assert app._cache_get("BTC", "iv", 0.0) is None
+    assert app._cache_get("BTC", "iv") is None
 
-    app._maybe_refresh_async("BTC", "iv", 0.0)
+    app._maybe_refresh_async("BTC", "iv")
 
     # Ждём завершения фоновой задачи (демон-поток). Вешаем мьютекс на
     # _refreshing, чтобы дождаться, пока пара покинет множество «греется».
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         with app._refreshing_lock:
-            busy = ("BTC", "iv", 0.0) in app._refreshing
+            busy = ("BTC", "iv") in app._refreshing
         if not busy:
             break
         time.sleep(0.02)
 
-    entry = app._cache_get("BTC", "iv", 0.0)
+    entry = app._cache_get("BTC", "iv")
     assert entry is not None
     assert entry["status"] in ("live", "error")
 
@@ -520,7 +536,7 @@ def test_maybe_refresh_async_dedups_concurrent_calls(monkeypatch):
 
     # Искусственно пометим пару как «уже греется».
     with app._refreshing_lock:
-        app._refreshing.add(("BTC", "iv", 0.0))
+        app._refreshing.add(("BTC", "iv"))
 
     started_threads = []
     original_start = threading.Thread.start
@@ -534,7 +550,7 @@ def test_maybe_refresh_async_dedups_concurrent_calls(monkeypatch):
 
     monkeypatch.setattr(threading.Thread, "start", counting_start)
 
-    app._maybe_refresh_async("BTC", "iv", 0.0)
+    app._maybe_refresh_async("BTC", "iv")
 
     assert not any(n.startswith("volatility-refresh-") for n in started_threads), \
         "не должен запускать второй поток для уже греющейся пары"
