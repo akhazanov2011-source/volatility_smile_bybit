@@ -1,60 +1,43 @@
 #!/usr/bin/env python3.14
 
 import logging
-import random
-import re
 import threading
 import time
 from datetime import datetime
 
 import plotly.graph_objects as go
-import requests
 from flask import Flask, render_template, request
 
 import bs_greeks
+from exchanges import (
+    EXCHANGES,
+    DEFAULT_EXCHANGE,
+    NormalizedOption,
+    all_exchange_coin_pairs,
+    supported_coins,
+)
 
-BASE_URL = "https://api.bybit.com"
-REQUEST_TIMEOUT = 10
-CACHE_TTL_SECONDS = 60
-REQUEST_MAX_ATTEMPTS = 4
-REQUEST_BACKOFF_BASE_SECONDS = 0.6
-REQUEST_BACKOFF_MAX_SECONDS = 6.0
-# Верхняя граница суммарного времени всех попыток запроса к Bybit. Без неё
-# 4 попытки × 10с timeout + backoff могут занять ~45с, что приводило к
-# WORKER TIMEOUT у gunicorn. Дедлайн гарантирует, что даже фоновый прогрев
-# не зависнет надолго.
-REQUEST_MAX_TOTAL_SECONDS = 25
-
-# Фоновое кеширование: как часто воркер полностью обновляет все (coin, metric).
-CACHE_REFRESH_INTERVAL_SECONDS = 180
-
-COIN_ALIASES = {
-    "BTC": {"api_base_coin": "BTC", "symbol_prefixes": {"BTC", "BTCUSDT"}},
-    "ETH": {"api_base_coin": "ETH", "symbol_prefixes": {"ETH", "ETHUSDT"}},
-    "SOL": {"api_base_coin": "SOL", "symbol_prefixes": {"SOL", "SOLUSDT"}},
-    "XRP": {"api_base_coin": "XRP", "symbol_prefixes": {"XRP", "XRPUSDT"}},
-    "DOGE": {"api_base_coin": "DOGE", "symbol_prefixes": {"DOGE", "DOGEUSDT"}},
-    "XAUTUSDT": {"api_base_coin": "XAUT", "symbol_prefixes": {"XAUT", "XAUTUSDT"}},
-}
-SUPPORTED_COINS = list(COIN_ALIASES.keys())
-MONTH_MAP = {
-    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
-}
+# Фоновое кеширование: как часто воркер полностью обновляет все (exchange, coin, metric).
+# Поднято с 180 до 300с: с несколькими биржами комбинаций стало заметно больше,
+# и более редкий прогрев снижает нагрузку на публичные API и риск rate-limit.
+CACHE_REFRESH_INTERVAL_SECONDS = 300
 
 DEFAULT_COIN = "BTC"
 STRIKE_COVERAGE_RATIO = 0.7
 
 # Безрисковая ставка считается автоматически для каждого опциона как implied
-# cost-of-carry: r = ln(underlyingPrice / indexPrice) / T. FALLBACK_RATE
-# используется при вырожденных входах (пустой underlyingPrice, T → 0 и т.п.) —
-# крипто-конвенция r = 0. RATE_CLAMP ограничивает выбросы ±50% годовых.
-FALLBACK_RATE = 0.0
+# cost-of-carry: r = ln(forward/spot) / T. FALLBACK_RATE используется при
+# вырожденных входах (пустой forward, T → 0 и т.п.) — крипто-конвенция r = 0.
+# Ставка применима только к биржам, чьи адаптеры отдают forward (Bybit —
+# per-option underlying_price, OKX — fwdPx); Deribit/Binance forward не
+# отдают, для них r = 0.
 RATE_CLAMP = 0.5
+FALLBACK_RATE = 0.0
 
 # Метрики, доступные в выпадающем списке. ``source`` указывает происхождение
-# значения для справочника: ``api`` — берётся из ответа Bybit, ``bs`` — считается
-# локально по модели Блэка — Шоулза (греки высшего порядка API не отдаются).
+# значения для справочника: ``api`` — берётся из ответа биржи (если она его
+# отдаёт, иначе считается по БС), ``bs`` — всегда считается локально по модели
+# Блэка — Шоулза, ``derived`` — нормировка данных API.
 SUPPORTED_METRICS = {
     "iv": {
         "label": "Implied Volatility",
@@ -62,7 +45,7 @@ SUPPORTED_METRICS = {
         "value_key": "iv",
         "source": "api",
         "description": (
-            "Подразумеваемая волатильность (поле markIv из API Bybit). Рыночная "
+            "Подразумеваемая волатильность (mark IV из ответа биржи). Рыночная "
             "оценка ожидаемого разброса цены базового актива до экспирации. "
             "Основа «улыбки волатильности»: чем выше IV, тем дороже опцион."
         ),
@@ -74,8 +57,9 @@ SUPPORTED_METRICS = {
         "source": "api",
         "description": (
             "Тета — скорость временного распада стоимости опциона (∂P/∂t). "
-            "Берётся из API Bybit. Обычно отрицательна для длинной позиции: "
-            "с каждым днём опцион теряет премию по мере приближения экспирации."
+            "Берётся из API биржи (если отдаётся), иначе считается по модели "
+            "Блэка — Шоулза. Обычно отрицательна для длинной позиции: с каждым "
+            "днём опцион теряет премию по мере приближения экспирации."
         ),
     },
     "theta_pct": {
@@ -95,10 +79,10 @@ SUPPORTED_METRICS = {
         "value_key": "mark_price",
         "source": "api",
         "description": (
-            "Маркировочная цена опциона (поле markPrice из API Bybit). "
-            "Это биржевая оценка текущей справедливой цены, которую Bybit "
-            "транслирует вместе с остальными параметрами тикера. На графике "
-            "показываются OTM-премии: Put ниже spot и Call выше spot."
+            "Маркировочная цена опциона (markPrice из ответа биржи). Биржевая "
+            "оценка текущей справедливой цены. На графике показываются "
+            "OTM-премии: Put ниже spot и Call выше spot. 注意: у Deribit премия "
+            "в базовом активе (BTC), у Bybit/Binance — в USDT."
         ),
     },
     "delta": {
@@ -108,8 +92,10 @@ SUPPORTED_METRICS = {
         "source": "api",
         "description": (
             "Дельта (∂P/∂S) — изменение цены опциона при изменении цены базового "
-            "актива на единицу. Для Call принимает значения 0…1, для Put −1…0. "
-            "Берётся из API Bybit. Также интерпретируется как вероятность экспирации ITM."
+            "актива на единицу. Для Call 0…1, для Put −1…0. Берётся из API биржи, "
+            "если отдаётся (Bybit/Binance); иначе считается локально по "
+            "Блэку — Шоулзу (Deribit/OKX). Также интерпретируется как вероятность "
+            "экспирации ITM."
         ),
     },
     "vega": {
@@ -119,8 +105,8 @@ SUPPORTED_METRICS = {
         "source": "api",
         "description": (
             "Вега (∂P/∂σ) — изменение цены опциона при росте волатильности на 1 "
-            "пункт (1 доля единицы). Показывает чувствительность к IV. Берётся из "
-            "API Bybit. Vega всегда положительна для длинной позиции в опционе."
+            "пункт. Показывает чувствительность к IV. Берётся из API биржи, если "
+            "отдаётся; иначе считается по модели Блэка — Шоулза."
         ),
     },
     "vanna": {
@@ -131,8 +117,7 @@ SUPPORTED_METRICS = {
         "description": (
             "Ванна (∂Delta/∂σ = ∂Vega/∂S) — грек второго порядка: скорость "
             "изменения дельты при росте волатильности. Характеризует «перекос» "
-            "(skew) волатильности. Считается локально по модели Блэка — Шоулза, "
-            "т.к. Bybit API этот грек не отдаёт."
+            "(skew) волатильности. Считается локально по модели Блэка — Шоулза."
         ),
     },
     "volga": {
@@ -196,136 +181,8 @@ app = Flask(__name__)
 
 
 # --------------------------------------------------------------------------------------
-# Сетевой слой
-# --------------------------------------------------------------------------------------
-
-def _requests_get_with_retry(url, *, params, timeout):
-    last_exc = None
-    started = time.monotonic()
-    for attempt in range(1, REQUEST_MAX_ATTEMPTS + 1):
-        try:
-            response = requests.get(url, params=params, timeout=timeout)
-            response.raise_for_status()
-            return response
-        except requests.RequestException as exc:
-            last_exc = exc
-            if attempt >= REQUEST_MAX_ATTEMPTS:
-                break
-            elapsed = time.monotonic() - started
-            if elapsed >= REQUEST_MAX_TOTAL_SECONDS:
-                logger.warning(
-                    "Bybit request aborted after %.1fs deadline (attempt %s/%s): %s",
-                    elapsed,
-                    attempt,
-                    REQUEST_MAX_ATTEMPTS,
-                    exc,
-                )
-                break
-            backoff = min(
-                REQUEST_BACKOFF_MAX_SECONDS,
-                REQUEST_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
-            )
-            jitter = random.uniform(0.0, backoff * 0.2)
-            sleep_for = backoff + jitter
-            logger.warning(
-                "Bybit request failed (attempt %s/%s), backing off %.2fs: %s",
-                attempt,
-                REQUEST_MAX_ATTEMPTS,
-                sleep_for,
-                exc,
-            )
-            time.sleep(sleep_for)
-    raise last_exc
-
-
-# --------------------------------------------------------------------------------------
 # Доменная логика
 # --------------------------------------------------------------------------------------
-
-def parse_symbol(symbol):
-    parts = symbol.split("-")
-    if len(parts) < 5:
-        return None
-
-    base_coin = parts[0]
-    expiry_str = parts[1]
-    strike = parts[2]
-    option_type = parts[3]
-
-    match = re.match(r"(\d+)([A-Z]{3})(\d{2})", expiry_str)
-    if not match:
-        return None
-
-    day = int(match.group(1))
-    month_str = match.group(2)
-    year = 2000 + int(match.group(3))
-    month = MONTH_MAP.get(month_str)
-    if month is None:
-        return None
-
-    try:
-        expiry_dt = datetime(year, month, day)
-    except ValueError:
-        return None
-
-    return {
-        "base_coin": base_coin,
-        "strike": float(strike),
-        "option_type": "Call" if option_type == "C" else "Put",
-        "expiry_dt": expiry_dt,
-    }
-
-
-def get_coin_config(selected_coin):
-    return COIN_ALIASES[selected_coin]
-
-
-_tickers_cache = {}
-_tickers_cache_lock = threading.Lock()
-
-
-def get_tickers(base_coin):
-    cache_key = base_coin
-    now_ts = time.time()
-    with _tickers_cache_lock:
-        cached = _tickers_cache.get(cache_key)
-        if cached and (now_ts - cached["ts"]) < CACHE_TTL_SECONDS:
-            return cached["tickers"]
-
-    url = f"{BASE_URL}/v5/market/tickers"
-    params = {"category": "option", "baseCoin": base_coin}
-    try:
-        response = _requests_get_with_retry(url, params=params, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        raise RuntimeError(
-            f"Не удалось загрузить опционные тикеры Bybit для {base_coin} после нескольких попыток."
-        ) from exc
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise RuntimeError("Bybit вернул невалидный JSON-ответ.") from exc
-
-    tickers = payload.get("result", {}).get("list")
-    if not isinstance(tickers, list):
-        raise RuntimeError("Bybit вернул неожиданный формат данных для списка тикеров.")
-
-    with _tickers_cache_lock:
-        _tickers_cache[cache_key] = {"ts": now_ts, "tickers": tickers}
-    return tickers
-
-
-def get_spot_price(tickers):
-    for ticker in tickers:
-        index_price = ticker.get("indexPrice")
-        if index_price and index_price != "":
-            return float(index_price)
-    return None
-
-
-def matches_selected_coin(parsed_base_coin, selected_coin):
-    return parsed_base_coin in get_coin_config(selected_coin)["symbol_prefixes"]
-
 
 def format_strike(strike):
     if strike >= 100:
@@ -351,6 +208,13 @@ def normalize_metric(value):
     return metric
 
 
+def normalize_exchange(value):
+    exchange = (value or DEFAULT_EXCHANGE).lower()
+    if exchange not in EXCHANGES:
+        return DEFAULT_EXCHANGE
+    return exchange
+
+
 def calculate_theta_pct(theta_value, mark_price_value):
     theta_numeric = parse_numeric(theta_value)
     mark_price_numeric = parse_numeric(mark_price_value)
@@ -359,15 +223,15 @@ def calculate_theta_pct(theta_value, mark_price_value):
     return theta_numeric / mark_price_numeric * 100
 
 
-def collect_strikes(tickers, selected_coin):
+def collect_strikes(options, base_coin):
+    """Уникальные страйки опционов с известным mark_iv выбранной монеты."""
     strikes = set()
-    for ticker in tickers:
-        if not ticker.get("markIv"):
+    for opt in options:
+        if opt.base_coin != base_coin:
             continue
-        parsed = parse_symbol(ticker["symbol"])
-        if parsed is None or not matches_selected_coin(parsed["base_coin"], selected_coin):
+        if opt.mark_iv is None or opt.mark_iv <= 0:
             continue
-        strikes.add(parsed["strike"])
+        strikes.add(opt.strike)
     return sorted(strikes)
 
 
@@ -382,41 +246,38 @@ def get_strike_window(strikes, spot_price):
     return min(nearest_strikes), max(nearest_strikes), target_count
 
 
-def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_price):
+def fetch_and_prepare_data(options, min_strike, max_strike, spot_price):
+    """Трансформирует нормализованные опционы в сгруппированные по экспирации
+    точки улыбки. ``options`` — list[NormalizedOption].
+
+    Греки, отсутствующие в API биржи (delta/gamma/theta/vega = None),
+    досчитываются локально по модели Блэка — Шоулза. Высшие греки (vanna,
+    volga, speed, charm, ultima) всегда считаются локально.
+    """
     raw_by_expiry = {}
     now_dt = datetime.now()
 
-    for ticker in tickers:
-        symbol = ticker["symbol"]
-        iv_str = ticker.get("markIv")
-        if not iv_str:
+    for opt in options:
+        if opt.mark_iv is None or opt.mark_iv <= 0:
             continue
 
-        parsed = parse_symbol(symbol)
-        if parsed is None or not matches_selected_coin(parsed["base_coin"], selected_coin):
-            continue
-
-        strike = parsed["strike"]
+        strike = opt.strike
         if strike < min_strike or strike > max_strike:
             continue
 
-        opt_type = parsed["option_type"]
-        expiry = parsed["expiry_dt"]
-        iv = float(iv_str) * 100
-        mark_price = ticker.get("markPrice", "N/A")
-        theta = ticker.get("theta", "N/A")
+        opt_type = opt.option_type
+        expiry = opt.expiry_dt
+        iv = opt.mark_iv * 100  # в проценты для отображения
+        sigma = opt.mark_iv     # доля единицы для BS
 
-        # Время до экспирации в годах и волатильность в долях единицы — для локального
-        # расчёта высших греков по модели Блэка — Шоулза.
+        # Время до экспирации в годах.
         seconds_to_expiry = (expiry - now_dt).total_seconds()
         time_to_expiry = seconds_to_expiry / bs_greeks.SECONDS_PER_YEAR if seconds_to_expiry > 0 else 0.0
-        sigma = iv / 100.0
 
-        # Безрисковая ставка считается per-option из implied cost-of-carry:
-        # r = ln(forward/spot)/T, где forward = underlyingPrice (поле Bybit).
-        # Подстановка этого r в spot-based Блэка — Шоулза эквивалентна Black-76
-        # (модель для опционов на фьючерсы/перпетуалы). Клампим от выбросов.
-        forward_price = parse_numeric(ticker.get("underlyingPrice"))
+        # Безрисковая ставка per-option из implied cost-of-carry:
+        # r = ln(forward/spot)/T. forward = underlying_price (если биржа
+        # отдаёт). Deribit/Binance не отдают forward → r = 0.
+        forward_price = opt.underlying_price
         r_raw = (
             bs_greeks.implied_rate(spot_price, forward_price, time_to_expiry)
             if forward_price is not None
@@ -424,7 +285,23 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
         )
         risk_free_rate = FALLBACK_RATE if r_raw is None else max(-RATE_CLAMP, min(RATE_CLAMP, r_raw))
 
-        # Высшие греки (Bybit API их не отдаёт). При вырожденных входах получим None.
+        # Базовые греки: из API, если есть; иначе по БС. opt_type в нижний регистр
+        # для bs_greeks (ожидает "call"/"put").
+        bs_type = opt_type.lower()
+        delta_val = opt.delta if opt.delta is not None else bs_greeks.bs_delta(
+            spot_price, strike, time_to_expiry, risk_free_rate, sigma, option_type=bs_type
+        )
+        gamma_val = opt.gamma if opt.gamma is not None else bs_greeks.bs_gamma(
+            spot_price, strike, time_to_expiry, risk_free_rate, sigma
+        )
+        theta_val = opt.theta if opt.theta is not None else bs_greeks.bs_theta(
+            spot_price, strike, time_to_expiry, risk_free_rate, sigma, option_type=bs_type
+        )
+        vega_val = opt.vega if opt.vega is not None else bs_greeks.bs_vega(
+            spot_price, strike, time_to_expiry, risk_free_rate, sigma
+        )
+
+        # Высшие греки — всегда локально. При вырожденных входах получим None.
         vanna_val = bs_greeks.vanna(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
         volga_val = bs_greeks.volga(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
         speed_val = bs_greeks.speed(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
@@ -434,23 +311,26 @@ def fetch_and_prepare_data(selected_coin, tickers, min_strike, max_strike, spot_
         if expiry not in raw_by_expiry:
             raw_by_expiry[expiry] = {"Call": [], "Put": []}
 
+        mark_price_val = opt.mark_price
+
         raw_by_expiry[expiry][opt_type].append(
             {
                 "strike": strike,
                 "iv": iv,
-                "delta": ticker.get("delta", "N/A"),
-                "mark_price": mark_price,
-                "gamma": ticker.get("gamma", "N/A"),
-                "theta": theta,
-                "theta_pct": calculate_theta_pct(theta, mark_price),
-                "vega": ticker.get("vega", "N/A"),
+                "option_type": opt_type,
+                "delta": delta_val,
+                "mark_price": mark_price_val,
+                "gamma": gamma_val,
+                "theta": theta_val,
+                "theta_pct": calculate_theta_pct(theta_val, mark_price_val),
+                "vega": vega_val,
                 "vanna": vanna_val,
                 "volga": volga_val,
                 "speed": speed_val,
                 "charm": charm_val,
                 "ultima": ultima_val,
                 "risk_free_rate": risk_free_rate,
-                "symbol": symbol,
+                "symbol": opt.symbol,
                 "is_otm": (
                     (opt_type == "Call" and strike > spot_price)
                     or (opt_type == "Put" and strike < spot_price)
@@ -628,20 +508,33 @@ def _format_greek(value, precision=4):
     return f"{num:.{precision}f}"
 
 
+def _fmt(value, fmt):
+    """Форматирует число по шаблону (напр. ':.2f'); None → 'N/A'.
+    Малые по модулю величины (< 1e-3, не ноль) показываются через :.4g,
+    чтобы speed/ultima читались как экспонента."""
+    num = parse_numeric(value)
+    if num is None:
+        return "N/A"
+    if abs(num) < 1e-3 and num != 0:
+        return f"{num:.4g}"
+    return f"{num:{fmt}}"
+
+
 def build_hover_text(item, label_date, days_to_expiry, selected_metric):
-    option_type = "Call" if "-C-" in item["symbol"] else "Put"
-    delta_str = f"{float(item['delta']):.4f}" if item["delta"] != "N/A" else "N/A"
-    mark_str = f"{float(item['mark_price']):.2f}" if item["mark_price"] != "N/A" else "N/A"
-    gamma_str = f"{float(item['gamma']):.6f}" if item["gamma"] != "N/A" else "N/A"
-    theta_str = f"{float(item['theta']):.2f}" if item["theta"] != "N/A" else "N/A"
-    vega_str = f"{float(item['vega']):.2f}" if item["vega"] != "N/A" else "N/A"
+    option_type = item.get("option_type", "Call")
+    delta_str = _fmt(item["delta"], ".4f")
+    mark_str = _fmt(item["mark_price"], ".2f")
+    gamma_str = _fmt(item["gamma"], ".6f")
+    theta_str = _fmt(item["theta"], ".2f")
+    vega_str = _fmt(item["vega"], ".2f")
     metric_title = SUPPORTED_METRICS[selected_metric]["label"]
-    metric_value = parse_numeric(item.get(SUPPORTED_METRICS[selected_metric]["value_key"]))
-    metric_str = _format_greek(metric_value)
+    metric_str = _format_greek(parse_numeric(item.get(SUPPORTED_METRICS[selected_metric]["value_key"])))
     theta_pct_value = parse_numeric(item.get("theta_pct"))
     theta_pct_str = f"{theta_pct_value:.2f}%" if theta_pct_value is not None else "N/A"
     r_value = parse_numeric(item.get("risk_free_rate"))
     r_str = f"{r_value * 100:.2f}%" if r_value is not None else "N/A"
+    iv_value = parse_numeric(item.get("iv"))
+    iv_str = f"{iv_value:.2f}%" if iv_value is not None else "N/A"
     return (
         f"<b>{item['symbol']}</b><br>"
         f"Экспирация: {label_date} ({days_to_expiry}д)<br>"
@@ -649,7 +542,7 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
         f"Страйк: {format_strike(item['strike'])}<br>"
         f"<b>Mark Price: {mark_str}</b><br>"
         f"<b>{metric_title}: {metric_str}</b><br>"
-        f"IV: {item['iv']:.2f}%<br>"
+        f"IV: {iv_str}<br>"
         f"Theta / Mark Price: {theta_pct_str}<br>"
         f"Delta: {delta_str}<br>"
         f"Gamma: {gamma_str}<br>"
@@ -669,10 +562,11 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
 # --------------------------------------------------------------------------------------
 #
 # Воркер-демон раз в CACHE_REFRESH_INTERVAL_SECONDS обновляет отрендеренный график
-# (chart_html + сводная статистика) для каждой пары (coin, metric) и кладёт в _cache.
-# Маршрут index() читает кеш; при холодном старте/промахе делает синхронный refresh
-# именно этой пары. Сетевой слой get_tickers имеет собственный TTL-кеш (60 с), поэтому
-# фоновый проход делает по одному сетевому запросу на монету, а не на метрику.
+# (chart_html + сводная статистика) для каждой тройки (exchange, coin, metric) и
+# кладёт в _cache. Маршрут index() читает кеш; при холодном старте/промахе делает
+# асинхронный refresh именно этой тройки. Адаптеры бирж имеют собственный TTL-кеш
+# сырых данных (60с), поэтому фоновый проход делает по одному сетевому запросу на
+# монету, а не на метрику.
 
 _cache = {}
 _cache_lock = threading.Lock()
@@ -680,55 +574,60 @@ _cache_lock = threading.Lock()
 _worker_started = False
 _worker_start_lock = threading.Lock()
 
-# Тройки (coin, metric, rate), которые прямо сейчас греются в фоне.
-# Предотвращает дублирование параллельных фоновых запросов одной и той же пары
+# Тройки (exchange, coin, metric), которые прямо сейчас греются в фоне.
+# Предотвращает дублирование параллельных фоновых запросов одной и той же тройки
 # при множественных cache-miss (например, несколько пользователей одновременно).
 _refreshing = set()
 _refreshing_lock = threading.Lock()
 
 
 def _all_combos():
-    # Фоновый воркер греет все пары (coin, metric). Ставка считается per-option
-    # из underlyingPrice, поэтому не входит в ключ кеша.
+    # Фоновый воркер греет все тройки (exchange, coin, metric).
     return [
-        (coin, metric)
-        for coin in SUPPORTED_COINS
+        (exchange, coin, metric)
+        for exchange, coin in all_exchange_coin_pairs()
         for metric in SUPPORTED_METRICS
     ]
 
 
-def _cache_get(coin, metric):
+def _cache_get(exchange, coin, metric):
     with _cache_lock:
-        entry = _cache.get((coin, metric))
+        entry = _cache.get((exchange, coin, metric))
         return dict(entry) if entry is not None else None
 
 
-def _cache_set(coin, metric, entry):
+def _cache_set(exchange, coin, metric, entry):
     with _cache_lock:
-        _cache[(coin, metric)] = entry
+        _cache[(exchange, coin, metric)] = entry
 
 
-def _build_chart_entry(selected_coin, selected_metric):
+def _build_chart_entry(selected_exchange, selected_coin, selected_metric):
     """Сетевой запрос + рендер. Никогда не бросает исключение наружу."""
     try:
-        api_base_coin = get_coin_config(selected_coin)["api_base_coin"]
-        tickers = get_tickers(api_base_coin)
-        spot_price = get_spot_price(tickers)
+        adapter = EXCHANGES[selected_exchange].adapter
+        coin = selected_coin
+        if coin not in adapter.supported_coins:
+            # Выбранная монета не торгуется опционами на этой бирже — берём
+            # первую поддерживаемую, чтобы график не падал.
+            coin = adapter.supported_coins[0]
+
+        spot_price, forward_price, options = adapter.fetch(coin)
         if spot_price is None:
             raise ValueError("Не удалось определить spot цену для выбранной монеты.")
 
-        strikes = collect_strikes(tickers, selected_coin)
+        # base_coin для фильтрации — UI-имя монеты; адаптеры кладут его в option.
+        strikes = collect_strikes(options, coin)
         total_strikes = len(strikes)
         min_strike, max_strike, displayed_strikes = get_strike_window(strikes, spot_price)
         _, by_expiry, sorted_expiries = fetch_and_prepare_data(
-            selected_coin, tickers, min_strike, max_strike, spot_price
+            options, min_strike, max_strike, spot_price
         )
         if not by_expiry:
             raise ValueError("Нет данных для построения графика в выбранном диапазоне.")
 
         expiries_count = len(sorted_expiries)
         fig = build_figure(
-            selected_coin,
+            coin,
             spot_price,
             by_expiry,
             sorted_expiries,
@@ -748,6 +647,7 @@ def _build_chart_entry(selected_coin, selected_metric):
         return {
             "chart_html": chart_html,
             "error": None,
+            "coin": coin,
             "spot_price": spot_price,
             "expiries_count": expiries_count,
             "min_strike": min_strike,
@@ -759,14 +659,19 @@ def _build_chart_entry(selected_coin, selected_metric):
         }
     except Exception as exc:
         logger.exception(
-            "Error building chart (coin=%s metric=%s): %s",
+            "Error building chart (exchange=%s coin=%s metric=%s): %s",
+            selected_exchange,
             selected_coin,
             selected_metric,
             exc,
         )
         return {
             "chart_html": None,
-            "error": "Не удалось загрузить данные Bybit. Попробуйте обновить страницу через минуту.",
+            "error": (
+                f"Не удалось загрузить данные с {EXCHANGES[selected_exchange].label}. "
+                "Попробуйте обновить страницу через минуту."
+            ),
+            "coin": selected_coin,
             "spot_price": None,
             "expiries_count": 0,
             "min_strike": None,
@@ -778,20 +683,21 @@ def _build_chart_entry(selected_coin, selected_metric):
         }
 
 
-def refresh_combo(selected_coin, selected_metric):
-    """Собирает график для пары и кладёт в кеш. Возвращает запись кеша."""
-    entry = _build_chart_entry(selected_coin, selected_metric)
-    _cache_set(selected_coin, selected_metric, entry)
+def refresh_combo(selected_exchange, selected_coin, selected_metric):
+    """Собирает график для тройки и кладёт в кеш. Возвращает запись кеша."""
+    entry = _build_chart_entry(selected_exchange, selected_coin, selected_metric)
+    _cache_set(selected_exchange, selected_coin, selected_metric, entry)
     return entry
 
 
 def _warming_entry():
     """Заглушка для cache-miss: мгновенно возвращается в маршруте index(),
-    чтобы запрос не висел на синхронном сетевом фетче. Шаблон рисует спиннер
+    чтобы запрос не висел на синхронном фетче. Шаблон рисует спиннер
     и статус «Кеш: прогревается» для cache_status == 'warming'."""
     return {
         "chart_html": None,
         "error": None,
+        "coin": None,
         "spot_price": None,
         "expiries_count": 0,
         "min_strike": None,
@@ -803,11 +709,11 @@ def _warming_entry():
     }
 
 
-def _maybe_refresh_async(selected_coin, selected_metric):
-    """Запускает прогрев пары в fire-and-forget daemon-потоке ровно один раз:
-    если пара уже греется, ничего не делает. Это гарантирует, что поток
+def _maybe_refresh_async(selected_exchange, selected_coin, selected_metric):
+    """Запускает прогрев тройки в fire-and-forget daemon-потоке ровно один раз:
+    если тройка уже греется, ничего не делает. Это гарантирует, что поток
     запросов не блокируется на сети — только ставит задачу в фон."""
-    key = (selected_coin, selected_metric)
+    key = (selected_exchange, selected_coin, selected_metric)
     with _refreshing_lock:
         if key in _refreshing:
             return
@@ -815,10 +721,13 @@ def _maybe_refresh_async(selected_coin, selected_metric):
 
     def _runner():
         try:
-            refresh_combo(selected_coin, selected_metric)
+            refresh_combo(selected_exchange, selected_coin, selected_metric)
         except Exception:
             logger.exception(
-                "Async refresh unexpectedly failed for %s/%s", selected_coin, selected_metric
+                "Async refresh unexpectedly failed for %s/%s/%s",
+                selected_exchange,
+                selected_coin,
+                selected_metric,
             )
         finally:
             with _refreshing_lock:
@@ -826,7 +735,7 @@ def _maybe_refresh_async(selected_coin, selected_metric):
 
     thread = threading.Thread(
         target=_runner,
-        name=f"volatility-refresh-{selected_coin}-{selected_metric}",
+        name=f"volatility-refresh-{selected_exchange}-{selected_coin}-{selected_metric}",
         daemon=True,
     )
     thread.start()
@@ -834,12 +743,15 @@ def _maybe_refresh_async(selected_coin, selected_metric):
 
 def _background_worker_loop():
     while True:
-        for coin, metric in _all_combos():
+        for exchange, coin, metric in _all_combos():
             try:
-                refresh_combo(coin, metric)
+                refresh_combo(exchange, coin, metric)
             except Exception:
                 logger.exception(
-                    "Background refresh unexpectedly failed for %s/%s", coin, metric
+                    "Background refresh unexpectedly failed for %s/%s/%s",
+                    exchange,
+                    coin,
+                    metric,
                 )
         time.sleep(CACHE_REFRESH_INTERVAL_SECONDS)
 
@@ -875,19 +787,20 @@ def healthcheck():
 
 @app.get("/")
 def index():
+    selected_exchange = normalize_exchange(request.args.get("exchange"))
+    exchange_coins = supported_coins(selected_exchange)
     selected_coin = request.args.get("coin", DEFAULT_COIN).upper()
-    if selected_coin not in SUPPORTED_COINS:
-        selected_coin = DEFAULT_COIN
+    if selected_coin not in exchange_coins:
+        selected_coin = exchange_coins[0] if exchange_coins else DEFAULT_COIN
     selected_metric = normalize_metric(request.args.get("metric"))
 
     _ensure_worker_started()
 
-    entry = _cache_get(selected_coin, selected_metric)
+    entry = _cache_get(selected_exchange, selected_coin, selected_metric)
     if entry is None:
-        # Cache-miss / холодный старт: НЕ виснем на синхронном фетче (~45с в
-        # худшем случае → приводило к WORKER TIMEOUT). Мгновенно отдаём
-        # страницу-заглушку «прогрев кеша», а саму пару греем в фоне.
-        _maybe_refresh_async(selected_coin, selected_metric)
+        # Cache-miss / холодный старт: НЕ виснем на синхронном фетче. Мгновенно
+        # отдаём страницу-заглушку «прогрев кеша», а саму тройку греем в фоне.
+        _maybe_refresh_async(selected_exchange, selected_coin, selected_metric)
         entry = _warming_entry()
 
     updated_at = entry.get("updated_at")
@@ -897,10 +810,16 @@ def index():
         else "—"
     )
 
+    # Если выбранная монета не поддерживается биржей, отрисовываем фактическую.
+    effective_coin = entry.get("coin") or selected_coin
+
     return render_template(
         "index.html",
-        coins=SUPPORTED_COINS,
-        selected_coin=selected_coin,
+        exchanges=EXCHANGES,
+        selected_exchange=selected_exchange,
+        exchange_label=EXCHANGES[selected_exchange].label,
+        coins=exchange_coins,
+        selected_coin=effective_coin,
         metrics=SUPPORTED_METRICS,
         selected_metric=selected_metric,
         chart_html=entry.get("chart_html"),
