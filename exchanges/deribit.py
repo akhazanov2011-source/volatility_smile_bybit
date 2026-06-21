@@ -9,7 +9,9 @@
 
 Нюансы Deribit (см. проверку API):
   * ``mark_iv`` — в ПРОЦЕНТАХ (35.22 = 35.22%); нормализуем /100;
-  * ``mark_price`` — премия в BTC (quote_currency = базовый актив);
+  * ``mark_price`` — премия в BTC (quote_currency = базовый актив); адаптер
+    конвертирует её в USDT по spot (``mark_price_btc * spot_price``) для
+    сопоставимости с Bybit/Binance;
   * spot/index — отдельным запросом ``get_index_price?index_name=btc_usd``
     (имя индекса в нижнем регистре);
   * греки в bulk-ответе НЕТ → delta/gamma/theta/vega = None (считает BS);
@@ -128,6 +130,9 @@ class DeribitAdapter(DataSource):
             raise ValueError(f"Deribit не поддерживает монету {coin}")
 
         records = self._get_book_summary(config["currency"])
+        # Spot получаем ДО построения опционов: он нужен для конвертации
+        # mark_price из BTC в USDT (Deribit котирует премию в базовом активе).
+        spot_price = self._get_index_price(config["index_name"])
 
         options: list[NormalizedOption] = []
         for rec in records:
@@ -143,6 +148,15 @@ class DeribitAdapter(DataSource):
             # Deribit отдаёт IV в процентах → нормализуем в доли единицы.
             mark_iv = mark_iv_pct / 100.0 if mark_iv_pct is not None else None
 
+            # mark_price Deribit — в BTC. Приводим к USDT для сопоставимости
+            # с Bybit/Binance. Если spot недоступен или mark_price отсутствует
+            # — оставляем None.
+            mark_price_btc = _to_float(rec.get("mark_price"))
+            if mark_price_btc is not None and spot_price is not None:
+                mark_price = mark_price_btc * spot_price
+            else:
+                mark_price = None
+
             options.append(
                 NormalizedOption(
                     symbol=instrument_name,
@@ -151,7 +165,7 @@ class DeribitAdapter(DataSource):
                     option_type=option_type,
                     expiry_dt=expiry_dt,
                     mark_iv=mark_iv,
-                    mark_price=_to_float(rec.get("mark_price")),
+                    mark_price=mark_price,
                     delta=None,   # Deribit bulk не отдаёт греки → BS
                     gamma=None,
                     theta=None,
@@ -160,5 +174,4 @@ class DeribitAdapter(DataSource):
                 )
             )
 
-        spot_price = self._get_index_price(config["index_name"])
         return spot_price, None, options

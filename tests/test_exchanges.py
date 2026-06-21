@@ -151,9 +151,9 @@ def test_deribit_parse_invalid():
     assert deribit_parse("BTC-99ZZZ26-100-C") is None
 
 
-def test_deribit_adapter_normalizes_iv_and_no_greeks(monkeypatch):
-    """Deribit: mark_iv в ПРОЦЕНТАХ (35.22) → нормализуем /100; греков нет → None;
-    spot из get_index_price."""
+def test_deribit_adapter_normalizes_iv_and_converts_mark_price_to_usdt(monkeypatch):
+    """Deribit: mark_iv в ПРОЦЕНТАХ (35.22) → нормализуем /100; mark_price
+    котируется в BTC → конвертируется в USDT (× spot); греков нет → None."""
     summary = {
         "result": [
             {
@@ -170,19 +170,22 @@ def test_deribit_adapter_normalizes_iv_and_no_greeks(monkeypatch):
             {"instrument_name": "garbage"},  # пропускается
         ]
     }
-    index = {"result": {"index_price": 64086.08, "estimated_delivery_price": 64090.53}}
 
     adapter = DeribitAdapter()
+    spot_usd = 64086.08
     monkeypatch.setattr(adapter, "_get_book_summary", lambda currency: summary["result"])
-    monkeypatch.setattr(adapter, "_get_index_price", lambda name: 64086.08)
+    monkeypatch.setattr(adapter, "_get_index_price", lambda name: spot_usd)
 
     spot, forward, options = adapter.fetch("BTC")
-    assert spot == 64086.08
+    assert spot == spot_usd
     assert forward is None
     assert len(options) == 2
     call = next(o for o in options if o.option_type == "Call")
+    put = next(o for o in options if o.option_type == "Put")
     assert call.mark_iv == pytest.approx(0.3522)  # 35.22 / 100
-    assert call.mark_price == 0.0199
+    # mark_price приводится к USDT: 0.0199 BTC × 64086.08 ≈ 1275.31 USDT
+    assert call.mark_price == pytest.approx(0.0199 * spot_usd)
+    assert put.mark_price == pytest.approx(0.05 * spot_usd)
     # Греков в Deribit bulk нет
     assert call.delta is None
     assert call.gamma is None
@@ -190,6 +193,23 @@ def test_deribit_adapter_normalizes_iv_and_no_greeks(monkeypatch):
     assert call.vega is None
     assert call.underlying_price is None
     assert call.expiry_dt == datetime(2026, 7, 31)
+
+
+def test_deribit_adapter_mark_price_none_when_spot_missing(monkeypatch):
+    """Если spot недоступен, mark_price нельзя сконвертировать → None."""
+    summary = {
+        "result": [
+            {"instrument_name": "BTC-31JUL26-69000-C", "mark_iv": 35.22,
+             "mark_price": 0.0199},
+        ]
+    }
+    adapter = DeribitAdapter()
+    monkeypatch.setattr(adapter, "_get_book_summary", lambda currency: summary["result"])
+    monkeypatch.setattr(adapter, "_get_index_price", lambda name: None)
+
+    spot, forward, options = adapter.fetch("BTC")
+    assert spot is None
+    assert options[0].mark_price is None  # нельзя конвертировать без spot
 
 
 # --------------------------------------------------------------------------------------

@@ -27,9 +27,9 @@ class NormalizedOption:
     Конвенции (адаптер приводит к ним до возврата):
       * ``mark_iv`` — в долях единицы (0.6 = 60%); Deribit отдаёт процент
         (35.22) и адаптер делит на 100;
-      * ``mark_price`` — в валюте котировки биржи (Bybit/OKX — USDT/USD,
-        Deribit — BTC). На улыбке IV это не сказывается; доменный слой
-        использует mark_price только для theta_pct и метрики mark_price;
+      * ``mark_price`` — приведён к USDT для сопоставимости между биржами
+        (Deribit котирует премию в BTC и конвертирует по spot; Bybit/Binance
+        изначально в USDT; OKX не отдаёт mark_price в opt-summary → None);
       * ``underlying_price`` — цена базового актива (перпетуала/форварда)
         для per-option implied rate; ``None`` если биржа не отдаёт.
     """
