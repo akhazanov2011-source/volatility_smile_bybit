@@ -796,15 +796,11 @@
             var el = document.getElementById(id);
             if (el) el.addEventListener('change', submitForm);
         });
-        // При смене биржи список монет меняется — сбрасываем coin на дефолт
-        // биржи (сервер сам подставит первую поддерживаемую), чтобы не было
-        // рывка с неподдерживаемой монетой.
+        // При смене биржи форма сабмитится с текущей монетой: сервер оставит её,
+        // если она поддерживается новой биржей (BTC/ETH переходят между всеми
+        // биржами), иначе откатит на первую поддерживаемую.
         var exEl = document.getElementById('exchange');
-        if (exEl) exEl.addEventListener('change', function () {
-            var coinInput = document.getElementById('coin');
-            if (coinInput) coinInput.value = '';
-            submitForm();
-        });
+        if (exEl) exEl.addEventListener('change', submitForm);
     })();
 
     // Модалки hint/glossary: открытие чип-кнопками, закрытие по крестику/backdrop/Esc.
