@@ -954,6 +954,18 @@
             }, 4000);
         })();
     </script>
+    {% elif cache_status == 'live' %}
+    <script>
+        // Автообновление страницы раз в 3 минуты для отображения свежих данных.
+        // Серверный кэш обновляется фоновым воркером с таким же интервалом.
+        (function () {
+            var params = new URLSearchParams(window.location.search);
+            setInterval(function () {
+                params.set('_t', Date.now().toString());
+                window.location.search = params.toString();
+            }, 180000);
+        })();
+    </script>
     {% endif %}
 </body>
 </html>
