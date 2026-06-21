@@ -39,6 +39,9 @@ BINANCE_BASE_URL = "https://eapi.binance.com"
 COIN_ALIASES = {
     "BTC": {"underlying": "BTCUSDT"},
     "ETH": {"underlying": "ETHUSDT"},
+    "SOL": {"underlying": "SOLUSDT"},
+    "XRP": {"underlying": "XRPUSDT"},
+    "DOGE": {"underlying": "DOGEUSDT"},
 }
 
 # Symbol: <COIN>-YYMMDD-STRIKE-C/P
@@ -126,6 +129,12 @@ class BinanceAdapter(DataSource):
             if parsed is None:
                 continue
             base_coin, strike, option_type, expiry_dt = parsed
+            # /eapi/v1/mark отдаёт опционы ВСЕХ активов одним списком; оставляем
+            # только запрошенную монету (поведение симметрично Deribit/OKX,
+            # которые отдают per-currency). Иначе смешанные страйки (BTC ~100000
+            # и DOGE ~0.085) дадут бессмысленный расчёт окна страйков.
+            if base_coin != coin:
+                continue
 
             options.append(
                 NormalizedOption(

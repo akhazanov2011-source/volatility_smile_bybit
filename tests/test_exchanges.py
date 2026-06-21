@@ -44,7 +44,7 @@ def test_supported_coins_per_exchange():
     assert exchanges.supported_coins("bybit") == ["BTC", "ETH", "SOL", "XRP", "DOGE", "XAUTUSDT"]
     assert exchanges.supported_coins("deribit") == ["BTC", "ETH", "SOL"]
     assert exchanges.supported_coins("okx") == ["BTC", "ETH"]
-    assert exchanges.supported_coins("binance") == ["BTC", "ETH"]
+    assert exchanges.supported_coins("binance") == ["BTC", "ETH", "SOL", "XRP", "DOGE"]
 
 
 def test_labels_human_readable():
@@ -325,7 +325,43 @@ def test_binance_adapter_markiv_and_greeks(monkeypatch):
     assert call.expiry_dt == datetime(2026, 6, 26)
 
 
+def test_binance_parse_decimal_strikes():
+    """XRP/DOGE имеют десятичные страйки (1.1, 0.085) — парсер должен их брать."""
+    assert binance_parse_symbol("XRP-260626-1.1-C") == ("XRP", 1.1, "Call", datetime(2026, 6, 26))
+    assert binance_parse_symbol("DOGE-260626-0.085-P") == ("DOGE", 0.085, "Put", datetime(2026, 6, 26))
+    assert binance_parse_symbol("SOL-260626-104-C") == ("SOL", 104.0, "Call", datetime(2026, 6, 26))
+
+
+def test_binance_adapter_filters_by_coin(monkeypatch):
+    """/eapi/v1/mark отдаёт опционы ВСЕХ активов одним списком — fetch должен
+    вернуть только опционы запрошенной монеты и её spot."""
+    mark = [
+        {"symbol": "BTC-260626-100000-C", "markIV": "0.5", "markPrice": "100",
+         "delta": "0.5", "gamma": "0.0001", "theta": "-5", "vega": "20"},
+        {"symbol": "SOL-260626-104-C", "markIV": "1.3326", "markPrice": "0.0539",
+         "delta": "0.0144", "gamma": "0.001", "theta": "-0.1", "vega": "1"},
+        {"symbol": "DOGE-260626-0.085-C", "markIV": "0.6118", "markPrice": "1.6093",
+         "delta": "0.4051", "gamma": "0.01", "theta": "-0.01", "vega": "0.5"},
+        {"symbol": "ETH-260626-3000-C", "markIV": "0.6", "markPrice": "50",
+         "delta": "0.5", "gamma": "0.0001", "theta": "-3", "vega": "15"},
+    ]
+
+    adapter = BinanceAdapter()
+    monkeypatch.setattr(adapter, "_get_mark", lambda: mark)
+    monkeypatch.setattr(adapter, "_get_index", lambda underlying: 73.98 if underlying == "SOLUSDT" else 1.0)
+
+    spot, forward, options = adapter.fetch("SOL")
+    assert spot == 73.98
+    assert forward is None
+    # Только SOL-опцион, без BTC/DOGE/ETH
+    assert len(options) == 1
+    assert all(o.base_coin == "SOL" for o in options)
+    sol = options[0]
+    assert sol.strike == 104.0
+    assert sol.mark_iv == pytest.approx(1.3326)
+
+
 def test_binance_unsupported_coin_raises():
     adapter = BinanceAdapter()
     with pytest.raises(ValueError):
-        adapter.fetch("SOL")
+        adapter.fetch("BNB")  # торгуется на Binance, но не добавлен в COIN_ALIASES
