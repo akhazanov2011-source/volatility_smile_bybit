@@ -1,11 +1,12 @@
 """
 Интеграционные тесты app.py: проверяют, что item-словари содержат все новые
 ключи греков, метрики нормализуются корректно, ставка валидируется, а на моках
-тикеров данные подготавливаются без обращения к сети.
+нормализованных опционов данные подготавливаются без обращения к сети.
 
-Сетевой слой (get_tickers, _build_chart_entry) мокается/не вызывается.
-Фоновый воркер не запускается, т.к. pytest импортирует app, а функция
-_ensure_worker_started() в маршруте не вызывается напрямую в этих тестах.
+Сетевой слой (адаптеры бирж, _build_chart_entry) мокается/не вызывается.
+Фоновый воркер не запускается в большинстве тестов (мокается
+_ensure_worker_started). Греки для бирж без API (Deribit/OKX/Binance)
+досчитываются по БС прямо в fetch_and_prepare_data.
 """
 
 import sys
@@ -15,16 +16,68 @@ import time
 from datetime import datetime, timedelta
 
 import pytest
-import requests
 
 # Добавляем корень проекта в sys.path, чтобы можно было импортировать app и bs_greeks
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app
+from exchanges import NormalizedOption
 
 
 # --------------------------------------------------------------------------------------
-# normalize_metric
+# Хелперы: построение NormalizedOption-моков
+# --------------------------------------------------------------------------------------
+
+def _make_option(symbol, base_coin="BTC", strike=60000.0, option_type="Call",
+                 mark_iv=0.6, mark_price=1000.0, delta=0.55, gamma=0.00002,
+                 theta=-5.0, vega=20.0, underlying_price=60000.0,
+                 expiry=None):
+    """Конструктор нормализованного опциона для тестов.
+
+    По умолчанию это Call на BTC, экспирация ~90 дней, IV=0.6 (как Bybit
+    markIv=0.6, но в долях единицы), forward=spot → implied rate = 0.
+    """
+    if expiry is None:
+        expiry = datetime.now() + timedelta(days=90)
+    return NormalizedOption(
+        symbol=symbol,
+        base_coin=base_coin,
+        strike=strike,
+        option_type=option_type,
+        expiry_dt=expiry,
+        mark_iv=mark_iv,
+        mark_price=mark_price,
+        delta=delta,
+        gamma=gamma,
+        theta=theta,
+        vega=vega,
+        underlying_price=underlying_price,
+    )
+
+
+def _make_mock_options(base_coin="BTC", strike=60000.0, underlying_price=60000.0,
+                       expiry=None):
+    """Call + Put на одном страйке — минимальный набор для улыбки.
+
+    Общий expiry гарантирует, что Call и Put попадут в один бакет по дате
+    экспирации (важно: datetime.now() имеет микросекунды — два независимых
+    вызова дали бы разные ключи).
+    """
+    if expiry is None:
+        expiry = datetime.now() + timedelta(days=90)
+    future = expiry.strftime("%d%b%y").upper()
+    return [
+        _make_option(f"{base_coin}-{future}-{int(strike)}-C-USDT",
+                     base_coin=base_coin, strike=strike, option_type="Call",
+                     underlying_price=underlying_price, expiry=expiry),
+        _make_option(f"{base_coin}-{future}-{int(strike)}-P-USDT",
+                     base_coin=base_coin, strike=strike, option_type="Put",
+                     underlying_price=underlying_price, expiry=expiry),
+    ]
+
+
+# --------------------------------------------------------------------------------------
+# normalize_metric / normalize_exchange
 # --------------------------------------------------------------------------------------
 
 def test_normalize_metric_accepts_new_greeks():
@@ -41,6 +94,18 @@ def test_normalize_metric_rejects_unknown():
     assert app.normalize_metric("nonexistent") == app.DEFAULT_METRIC
     assert app.normalize_metric(None) == app.DEFAULT_METRIC
     assert app.normalize_metric("") == app.DEFAULT_METRIC
+
+
+def test_normalize_exchange_defaults():
+    assert app.normalize_exchange(None) == app.DEFAULT_EXCHANGE
+    assert app.normalize_exchange("") == app.DEFAULT_EXCHANGE
+    assert app.normalize_exchange("bogus") == app.DEFAULT_EXCHANGE
+
+
+def test_normalize_exchange_accepts_all():
+    for key in ("bybit", "deribit", "okx", "binance"):
+        assert app.normalize_exchange(key) == key
+        assert app.normalize_exchange(key.upper()) == key
 
 
 # --------------------------------------------------------------------------------------
@@ -61,40 +126,14 @@ def test_expected_metric_keys_present():
 
 
 # --------------------------------------------------------------------------------------
-# fetch_and_prepare_data — на моках тикеров
+# fetch_and_prepare_data — на моках NormalizedOption
 # --------------------------------------------------------------------------------------
 
-def _make_ticker(symbol, mark_iv="0.6", mark_price="1000", delta="0.55",
-                 gamma="0.00002", theta="-5.0", vega="20.0", index_price="60000",
-                 underlying_price=None):
-    return {
-        "symbol": symbol,
-        "markIv": mark_iv,
-        "markPrice": mark_price,
-        "delta": delta,
-        "gamma": gamma,
-        "theta": theta,
-        "vega": vega,
-        "indexPrice": index_price,
-        # underlying_price по умолчанию = spot → implied rate = 0.
-        "underlyingPrice": underlying_price if underlying_price is not None else index_price,
-    }
-
-
-def _make_mock_tickers():
-    """Один Call + один Put на страйке 60000, экспирация через ~90 дней."""
-    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
-    return [
-        _make_ticker(f"BTC-{future}-60000-C-USDT"),
-        _make_ticker(f"BTC-{future}-60000-P-USDT"),
-    ]
-
-
 def test_fetch_and_prepare_data_returns_higher_greeks():
-    tickers = _make_mock_tickers()
+    options = _make_mock_options()
     spot = 60000.0
     _, by_expiry, sorted_expiries = app.fetch_and_prepare_data(
-        "BTC", tickers, 59000.0, 61000.0, spot
+        options, 59000.0, 61000.0, spot
     )
     assert len(sorted_expiries) == 1
     expiry = sorted_expiries[0]
@@ -103,99 +142,172 @@ def test_fetch_and_prepare_data_returns_higher_greeks():
         assert len(items) == 1
         item = items[0]
         # Базовые ключи (из API)
-        assert item["delta"] == "0.55"
-        assert item["vega"] == "20.0"
-        assert item["gamma"] == "0.00002"
-        # Новые высшие греки — должны присутствовать (float или None)
+        assert item["delta"] == 0.55
+        assert item["vega"] == 20.0
+        assert item["gamma"] == 0.00002
+        # Высшие греки — должны присутствовать (float или None)
         for key in ("vanna", "volga", "speed", "charm", "ultima"):
             assert key in item, f"Ключ {key} отсутствует в item"
-            # При T > 0, σ > 0, S > 0 — должны быть числом, не None
             assert item[key] is not None, f"{key} не должен быть None для валидного опциона"
-        # implied rate = ln(underlyingPrice/indexPrice)/T; при F=S → r=0
+        # implied rate = ln(underlying/spot)/T; при F=S → r=0
         assert item["risk_free_rate"] == 0.0
-        assert item["mark_price"] == "1000"
+        assert item["mark_price"] == 1000.0
 
 
 def test_fetch_and_prepare_data_higher_greeks_change_with_rate():
-    """Высшие греки должны зависеть от безрисковой ставки, которая теперь
-    выводится из underlyingPrice (implied cost-of-carry)."""
+    """Высшие греки должны зависеть от безрисковой ставки, которая выводится
+    из underlying_price (implied cost-of-carry)."""
     spot = 60000.0
-    # Два набора тикеров: один с F = S (r = 0), другой с премией перпа (r > 0).
-    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
-    tickers_flat = [
-        _make_ticker(f"BTC-{future}-60000-C-USDT", underlying_price="60000"),
-        _make_ticker(f"BTC-{future}-60000-P-USDT", underlying_price="60000"),
-    ]
-    tickers_premium = [
-        _make_ticker(f"BTC-{future}-60000-C-USDT", underlying_price="63000"),
-        _make_ticker(f"BTC-{future}-60000-P-USDT", underlying_price="63000"),
-    ]
-    _, by1, _ = app.fetch_and_prepare_data("BTC", tickers_flat, 59000.0, 61000.0, spot)
-    _, by2, _ = app.fetch_and_prepare_data("BTC", tickers_premium, 59000.0, 61000.0, spot)
+    # Общий expiry для обоих наборов, чтобы сравнивать греки в одном бакете.
+    expiry = datetime.now() + timedelta(days=90)
+    opts_flat = _make_mock_options(underlying_price=60000.0, expiry=expiry)
+    opts_premium = _make_mock_options(underlying_price=63000.0, expiry=expiry)
 
-    expiry = list(by1.keys())[0]
-    item_r0 = by1[expiry]["Call"][0]
-    item_r1 = by2[expiry]["Call"][0]
+    _, by1, _ = app.fetch_and_prepare_data(opts_flat, 59000.0, 61000.0, spot)
+    _, by2, _ = app.fetch_and_prepare_data(opts_premium, 59000.0, 61000.0, spot)
 
-    # Ставка считается как ln(F/S)/T. При F=S → r=0; при F=63000, S=60000, T≈0.246 → r>0.
+    expiry_key = list(by1.keys())[0]
+    item_r0 = by1[expiry_key]["Call"][0]
+    item_r1 = by2[expiry_key]["Call"][0]
+
     assert item_r0["risk_free_rate"] == 0.0
     assert item_r1["risk_free_rate"] > 0.0, "implied rate должен быть положительным при F > S"
-    # Charm чувствителен к r через d2; значения должны различаться.
     assert item_r0["charm"] != item_r1["charm"], "Charm должен зависеть от ставки r"
 
 
 def test_fetch_and_prepare_data_missing_underlying_price_falls_back():
-    """При отсутствии underlyingPrice ставка откатывается к FALLBACK_RATE (0)."""
-    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
-    tickers = [
-        _make_ticker(f"BTC-{future}-60000-C-USDT", underlying_price=""),
-        _make_ticker(f"BTC-{future}-60000-P-USDT", underlying_price=""),
+    """При отсутствии underlying_price ставка откатывается к FALLBACK_RATE (0)."""
+    expiry = datetime.now() + timedelta(days=90)
+    options = [
+        _make_option("BTC-TEST-60000-C-USDT", option_type="Call",
+                     underlying_price=None, expiry=expiry),
+        _make_option("BTC-TEST-60000-P-USDT", option_type="Put",
+                     underlying_price=None, expiry=expiry),
     ]
     spot = 60000.0
-    _, by_expiry, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot)
-    expiry = list(by_expiry.keys())[0]
-    assert by_expiry[expiry]["Call"][0]["risk_free_rate"] == app.FALLBACK_RATE
+    _, by_expiry, _ = app.fetch_and_prepare_data(options, 59000.0, 61000.0, spot)
+    expiry_key = list(by_expiry.keys())[0]
+    assert by_expiry[expiry_key]["Call"][0]["risk_free_rate"] == app.FALLBACK_RATE
 
 
 def test_fetch_and_prepare_data_default_rate_works():
-    """Без underlyingPrice используется FALLBACK_RATE и не падает."""
-    tickers = _make_mock_tickers()
+    """Без underlying_price используется FALLBACK_RATE и не падает."""
+    options = _make_mock_options()
     spot = 60000.0
-    _, by_expiry, _ = app.fetch_and_prepare_data("BTC", tickers, 59000.0, 61000.0, spot)
+    _, by_expiry, _ = app.fetch_and_prepare_data(options, 59000.0, 61000.0, spot)
     expiry = list(by_expiry.keys())[0]
     assert by_expiry[expiry]["Call"] and by_expiry[expiry]["Put"]
 
 
 def test_fetch_and_prepare_data_zero_iv_returns_none_greeks():
-    """markIv=0 не должен вызывать ZeroDivisionError; BS-метрики — None."""
-    future = (datetime.now() + timedelta(days=90)).strftime("%d%b%y").upper()
-    tickers = [
-        _make_ticker(f"BTC-{future}-60000-C-USDT", mark_iv="0"),
-        _make_ticker(f"BTC-{future}-60000-P-USDT", mark_iv="0"),
+    """mark_iv=0 не должен вызывать ZeroDivisionError; опции с IV<=0 пропускаются."""
+    expiry = datetime.now() + timedelta(days=90)
+    options = [
+        _make_option("BTC-TEST-60000-C-USDT", option_type="Call", mark_iv=0.0,
+                     delta=0.55, expiry=expiry),
+        _make_option("BTC-TEST-60000-P-USDT", option_type="Put", mark_iv=0.0,
+                     delta=-0.45, expiry=expiry),
     ]
     spot = 60000.0
     _, by_expiry, sorted_expiries = app.fetch_and_prepare_data(
-        "BTC", tickers, 59000.0, 61000.0, spot
+        options, 59000.0, 61000.0, spot
     )
-    assert len(sorted_expiries) == 1
-    expiry = sorted_expiries[0]
-    for opt_type in ("Call", "Put"):
-        item = by_expiry[expiry][opt_type][0]
-        for key in ("vanna", "volga", "speed", "charm", "ultima"):
-            assert item[key] is None, f"{key} должен быть None при markIv=0"
+    # mark_iv<=0 → опция пропускается → данных нет
+    assert sorted_expiries == []
+    assert by_expiry == {}
+
+
+def test_fetch_and_prepare_data_fills_greeks_when_api_missing():
+    """Для бирж без API-греков (Deribit/OKX) delta/gamma/theta/vega=None
+    в опционе → fetch_and_prepare_data досчитывает их по БС."""
+    expiry = datetime.now() + timedelta(days=90)
+    future = expiry.strftime("%d%b%y").upper()
+    options = [
+        NormalizedOption(
+            symbol=f"BTC-{future}-60000-C", base_coin="BTC", strike=60000.0,
+            option_type="Call", expiry_dt=expiry,
+            mark_iv=0.6, mark_price=0.02, delta=None, gamma=None,
+            theta=None, vega=None, underlying_price=None,
+        ),
+        NormalizedOption(
+            symbol=f"BTC-{future}-60000-P", base_coin="BTC", strike=60000.0,
+            option_type="Put", expiry_dt=expiry,
+            mark_iv=0.6, mark_price=0.02, delta=None, gamma=None,
+            theta=None, vega=None, underlying_price=None,
+        ),
+    ]
+    spot = 60000.0
+    _, by_expiry, _ = app.fetch_and_prepare_data(options, 59000.0, 61000.0, spot)
+    expiry_key = list(by_expiry.keys())[0]
+    call_item = by_expiry[expiry_key]["Call"][0]
+    put_item = by_expiry[expiry_key]["Put"][0]
+    # BS-греки должны быть числами (не None)
+    assert call_item["delta"] is not None and 0 < call_item["delta"] < 1
+    assert put_item["delta"] is not None and -1 < put_item["delta"] < 0
+    assert call_item["gamma"] is not None and call_item["gamma"] > 0
+    assert call_item["vega"] is not None and call_item["vega"] > 0
+    assert call_item["theta"] is not None and call_item["theta"] < 0
+
+
+def test_fetch_and_prepare_data_fills_mark_price_when_api_missing():
+    """mark_price=None (как у OKX — opt-summary не отдаёт markPx) →
+    fetch_and_prepare_data досчитывает его по модели Блэка — Шоулза, и значение
+    совпадает с прямой BS-ценой от тех же аргументов. Также theta_pct
+    становится не-None, т.к. теперь делится на вычисленную цену."""
+    import bs_greeks
+
+    expiry = datetime.now() + timedelta(days=90)
+    strike = 60000.0
+    spot = 60000.0
+    sigma = 0.6
+    # forward = spot → implied rate = 0, как у _make_option по умолчанию.
+    options = [
+        NormalizedOption(
+            symbol="BTC-OKX-60000-C", base_coin="BTC", strike=strike,
+            option_type="Call", expiry_dt=expiry,
+            mark_iv=sigma, mark_price=None, delta=None, gamma=None,
+            theta=None, vega=None, underlying_price=spot,
+        ),
+        NormalizedOption(
+            symbol="BTC-OKX-60000-P", base_coin="BTC", strike=strike,
+            option_type="Put", expiry_dt=expiry,
+            mark_iv=sigma, mark_price=None, delta=None, gamma=None,
+            theta=None, vega=None, underlying_price=spot,
+        ),
+    ]
+    _, by_expiry, _ = app.fetch_and_prepare_data(options, 59000.0, 61000.0, spot)
+    expiry_key = list(by_expiry.keys())[0]
+    call_item = by_expiry[expiry_key]["Call"][0]
+    put_item = by_expiry[expiry_key]["Put"][0]
+
+    # Считаем T тем же способом, что и в fetch_and_prepare_data.
+    now_dt = datetime.now()
+    seconds_to_expiry = (expiry - now_dt).total_seconds()
+    time_to_expiry = seconds_to_expiry / bs_greeks.SECONDS_PER_YEAR
+
+    expected_call = bs_greeks.bs_call_price(spot, strike, time_to_expiry, 0.0, sigma)
+    expected_put = bs_greeks.bs_put_price(spot, strike, time_to_expiry, 0.0, sigma)
+
+    assert call_item["mark_price"] is not None
+    assert call_item["mark_price"] == pytest.approx(expected_call)
+    assert put_item["mark_price"] == pytest.approx(expected_put)
+    # theta_pct теперь вычислим — не None, т.к. mark_price больше не None.
+    assert call_item["theta_pct"] is not None
+
 
 
 def test_build_hover_text_shows_bold_mark_price_after_strike():
     item = {
         "symbol": "BTC-TEST-60000-C-USDT",
         "strike": 60000.0,
-        "mark_price": "123.45",
+        "option_type": "Call",
+        "mark_price": 123.45,
         "iv": 60.0,
-        "delta": "0.55",
-        "gamma": "0.00002",
-        "theta": "-5.0",
+        "delta": 0.55,
+        "gamma": 0.00002,
+        "theta": -5.0,
         "theta_pct": -4.05,
-        "vega": "20.0",
+        "vega": 20.0,
         "vanna": 0.1,
         "volga": 0.2,
         "speed": 0.3,
@@ -212,8 +324,8 @@ def test_build_hover_text_shows_bold_mark_price_after_strike():
 
     assert strike_idx < mark_price_idx < iv_idx
     assert hover_text.count("Mark Price: 123.45") == 1
-    # implied rate выводится в конце тултипа в процентах годовых.
     assert "Risk-free Rate: 5.00%" in hover_text
+    assert "Тип: Call" in hover_text
 
 
 def test_build_figure_mark_price_uses_otm_points_only():
@@ -224,14 +336,15 @@ def test_build_figure_mark_price_uses_otm_points_only():
             "Call": [
                 {
                     "symbol": "BTC-TEST-1000-C-USDT",
+                    "option_type": "Call",
                     "strike": 1000.0,
-                    "mark_price": "120",
+                    "mark_price": 120.0,
                     "iv": 60.0,
-                    "delta": "0.8",
-                    "gamma": "0.1",
-                    "theta": "-1",
+                    "delta": 0.8,
+                    "gamma": 0.1,
+                    "theta": -1.0,
                     "theta_pct": -0.8,
-                    "vega": "2",
+                    "vega": 2.0,
                     "vanna": 0.1,
                     "volga": 0.1,
                     "speed": 0.1,
@@ -241,14 +354,15 @@ def test_build_figure_mark_price_uses_otm_points_only():
                 },
                 {
                     "symbol": "BTC-TEST-1100-C-USDT",
+                    "option_type": "Call",
                     "strike": 1100.0,
-                    "mark_price": "30",
+                    "mark_price": 30.0,
                     "iv": 60.0,
-                    "delta": "0.4",
-                    "gamma": "0.1",
-                    "theta": "-1",
+                    "delta": 0.4,
+                    "gamma": 0.1,
+                    "theta": -1.0,
                     "theta_pct": -3.3,
-                    "vega": "2",
+                    "vega": 2.0,
                     "vanna": 0.1,
                     "volga": 0.1,
                     "speed": 0.1,
@@ -260,14 +374,15 @@ def test_build_figure_mark_price_uses_otm_points_only():
             "Put": [
                 {
                     "symbol": "BTC-TEST-1000-P-USDT",
+                    "option_type": "Put",
                     "strike": 1000.0,
-                    "mark_price": "25",
+                    "mark_price": 25.0,
                     "iv": 60.0,
-                    "delta": "-0.4",
-                    "gamma": "0.1",
-                    "theta": "-1",
+                    "delta": -0.4,
+                    "gamma": 0.1,
+                    "theta": -1.0,
                     "theta_pct": -4.0,
-                    "vega": "2",
+                    "vega": 2.0,
                     "vanna": 0.1,
                     "volga": 0.1,
                     "speed": 0.1,
@@ -277,14 +392,15 @@ def test_build_figure_mark_price_uses_otm_points_only():
                 },
                 {
                     "symbol": "BTC-TEST-1100-P-USDT",
+                    "option_type": "Put",
                     "strike": 1100.0,
-                    "mark_price": "115",
+                    "mark_price": 115.0,
                     "iv": 60.0,
-                    "delta": "-0.8",
-                    "gamma": "0.1",
-                    "theta": "-1",
+                    "delta": -0.8,
+                    "gamma": 0.1,
+                    "theta": -1.0,
                     "theta_pct": -0.9,
-                    "vega": "2",
+                    "vega": 2.0,
                     "vanna": 0.1,
                     "volga": 0.1,
                     "speed": 0.1,
@@ -311,87 +427,83 @@ def test_build_figure_mark_price_uses_otm_points_only():
 
 
 # --------------------------------------------------------------------------------------
-# Кеш по 3-туплю (без сети) — через mock refresh_combo
+# Кеш по тройке (exchange, coin, metric) — без сети
 # --------------------------------------------------------------------------------------
 
-def test_cache_keyed_by_coin_metric(monkeypatch):
-    """_cache_get/_cache_set различают записи по паре (coin, metric)."""
-    monkeypatch.setattr(app, "get_tickers", lambda base_coin: _make_mock_tickers())
-    monkeypatch.setattr(app, "get_spot_price", lambda tickers: 60000.0)
+def test_cache_keyed_by_exchange_coin_metric():
+    """_cache_get/_cache_set различают записи по тройке (exchange, coin, metric)."""
+    assert app._cache_get("bybit", "BTC", "iv") is None
+    assert app._cache_get("deribit", "BTC", "iv") is None
 
-    entry_a = app._cache_get("BTC", "iv")
-    entry_b = app._cache_get("BTC", "delta")
-    # До заполнения обе None
-    assert entry_a is None and entry_b is None
-
-    # Заполняем одну — вторая остаётся None
-    app._cache_set("BTC", "iv", {"status": "live", "updated_at": 0.0})
-    assert app._cache_get("BTC", "iv") is not None
-    assert app._cache_get("BTC", "delta") is None
+    app._cache_set("bybit", "BTC", "iv", {"status": "live", "updated_at": 0.0})
+    assert app._cache_get("bybit", "BTC", "iv") is not None
+    # Другая биржа/метрика — None
+    assert app._cache_get("deribit", "BTC", "iv") is None
+    assert app._cache_get("bybit", "BTC", "delta") is None
 
 
 # --------------------------------------------------------------------------------------
-# Рендер шаблона index() — тулбар управления видимостью серий (без сети)
+# Рендер шаблона index() — селектор биржи, тулбар управления сериями (без сети)
 # --------------------------------------------------------------------------------------
+
+def _stub_cache_entry(status="live"):
+    return {
+        "chart_html": "<div id=\"plot\"></div>",
+        "error": None,
+        "coin": "BTC",
+        "spot_price": 60000.0,
+        "expiries_count": 5,
+        "min_strike": 55000.0,
+        "max_strike": 65000.0,
+        "displayed_strikes": 10,
+        "total_strikes": 20,
+        "updated_at": 0.0,
+        "status": status,
+    }
+
+
+def test_index_template_renders_exchange_selector(monkeypatch):
+    """Шаблон должен рендерить селектор биржи со всеми биржами."""
+    monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: _stub_cache_entry())
+
+    with app.app.test_request_context("/?exchange=bybit&coin=BTC&metric=iv"):
+        html = app.index()
+
+    assert 'id="exchange"' in html
+    assert 'name="exchange"' in html
+    for label in ("Bybit", "Deribit", "OKX", "Binance"):
+        assert label in html
+
 
 def test_index_template_renders_series_toolbar(monkeypatch):
     """Шаблон должен рендерить тулбар серий и кнопки, когда есть chart_html."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(
-        app,
-        "_cache_get",
-        lambda coin, metric: {
-            "chart_html": "<div id=\"plot\"></div>",
-            "error": None,
-            "spot_price": 60000.0,
-            "expiries_count": 5,
-            "min_strike": 55000.0,
-            "max_strike": 65000.0,
-            "displayed_strikes": 10,
-            "total_strikes": 20,
-            "updated_at": 0.0,
-            "status": "live",
-        },
-    )
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: _stub_cache_entry())
 
-    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+    with app.app.test_request_context("/?exchange=bybit&coin=BTC&metric=iv"):
         html = app.index()
 
     assert 'class="chart-toolbar"' in html
     assert 'id="show-all-series"' in html
     assert 'id="hide-all-series"' in html
-    # JS, отвечающий за сохранение видимости серий в localStorage.
     assert "vsm_hidden_series" in html
 
 
 def test_index_template_no_toolbar_without_chart(monkeypatch):
     """Когда chart_html отсутствует (ошибка/прогрев), кнопки управления сериями не рендерятся.
     Чипы Hint/Glossary остаются доступными всегда."""
+    entry = _stub_cache_entry(status="error")
+    entry["chart_html"] = None
+    entry["error"] = "Не удалось загрузить данные."
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(
-        app,
-        "_cache_get",
-        lambda coin, metric: {
-            "chart_html": None,
-            "error": "Не удалось загрузить данные Bybit.",
-            "spot_price": None,
-            "expiries_count": 0,
-            "min_strike": None,
-            "max_strike": None,
-            "displayed_strikes": 0,
-            "total_strikes": 0,
-            "updated_at": 0.0,
-            "status": "error",
-        },
-    )
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: entry)
 
-    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+    with app.app.test_request_context("/?exchange=bybit&coin=BTC&metric=iv"):
         html = app.index()
 
-    # Кнопок управления сериями нет — графика нет.
     assert 'id="show-all-series"' not in html
     assert 'id="hide-all-series"' not in html
-    # Чипы справки доступны в любом случае.
     assert 'id="open-hint"' in html
     assert 'id="open-glossary"' in html
 
@@ -399,55 +511,48 @@ def test_index_template_no_toolbar_without_chart(monkeypatch):
 def test_index_template_renders_metric_description(monkeypatch):
     """Шаблон должен рендерить описание выбранной метрики над графиком."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(
-        app,
-        "_cache_get",
-        lambda coin, metric: {
-            "chart_html": "<div id=\"plot\"></div>",
-            "error": None,
-            "spot_price": 60000.0,
-            "expiries_count": 5,
-            "min_strike": 55000.0,
-            "max_strike": 65000.0,
-            "displayed_strikes": 10,
-            "total_strikes": 20,
-            "updated_at": 0.0,
-            "status": "live",
-        },
-    )
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: _stub_cache_entry())
 
-    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+    with app.app.test_request_context("/?exchange=bybit&coin=BTC&metric=iv"):
         html = app.index()
 
     assert 'class="metric-description"' in html
-    # Описание метрики IV из SUPPORTED_METRICS должно быть в HTML.
     assert "Подразумеваемая волатильность" in html
 
 
 def test_index_template_cache_updated_utc_label(monkeypatch):
     """В кеш-баре должна быть пометка (UTC) рядом со временем обновления."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(
-        app,
-        "_cache_get",
-        lambda coin, metric: {
-            "chart_html": "<div id=\"plot\"></div>",
-            "error": None,
-            "spot_price": 60000.0,
-            "expiries_count": 5,
-            "min_strike": 55000.0,
-            "max_strike": 65000.0,
-            "displayed_strikes": 10,
-            "total_strikes": 20,
-            "updated_at": 0.0,
-            "status": "live",
-        },
-    )
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: _stub_cache_entry())
 
-    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+    with app.app.test_request_context("/?exchange=bybit&coin=BTC&metric=iv"):
         html = app.index()
 
     assert "(UTC)" in html
+
+
+def test_index_template_exchange_label_in_subtitle(monkeypatch):
+    """Subtitle должен содержать название выбранной биржи."""
+    monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: _stub_cache_entry())
+
+    with app.app.test_request_context("/?exchange=deribit&coin=BTC&metric=iv"):
+        html = app.index()
+
+    assert "Deribit options monitor" in html
+
+
+def test_index_coins_filtered_by_exchange(monkeypatch):
+    """При выборе deribit селектор монет должен содержать только BTC/ETH."""
+    monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: _stub_cache_entry())
+
+    with app.app.test_request_context("/?exchange=deribit&coin=BTC&metric=iv"):
+        html = app.index()
+
+    # Deribit поддерживает BTC/ETH — не должно быть DOGE/XAUTUSDT
+    assert "DOGE" not in html
+    assert "XAUTUSDT" not in html
 
 
 # --------------------------------------------------------------------------------------
@@ -458,26 +563,22 @@ def test_index_cache_miss_returns_warming_and_does_not_refresh_sync(monkeypatch)
     """При cache-miss маршрут должен мгновенно вернуть заглушку 'warming' и
     поставить прогрев в фон, а не вызывать refresh_combo синхронно."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(app, "_cache_get", lambda coin, metric: None)
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: None)
 
-    # refresh_combo ни при каких условиях не должен вызваться синхронно.
     refresh_calls = []
     monkeypatch.setattr(app, "refresh_combo", lambda *a, **k: refresh_calls.append(a))
 
-    # _maybe_refresh_async создаёт реальный поток; подменим на стаб, чтобы
-    # тест не зависел от потоков и сети.
     async_calls = []
     monkeypatch.setattr(
         app, "_maybe_refresh_async",
-        lambda coin, metric: async_calls.append((coin, metric)),
+        lambda ex, c, m: async_calls.append((ex, c, m)),
     )
 
-    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+    with app.app.test_request_context("/?exchange=bybit&coin=BTC&metric=iv"):
         html = app.index()
 
     assert refresh_calls == [], "refresh_combo не должен вызываться синхронно при cache-miss"
-    assert async_calls == [("BTC", "iv")], "должен запустить фоновый прогрев пары"
-    # Шаблон рисует спиннер и метку прогрева.
+    assert async_calls == [("bybit", "BTC", "iv")], "должен запустить фоновый прогрев тройки"
     assert 'Кеш: прогревается' in html
     assert 'Загружаем данные с Bybit' in html
 
@@ -485,114 +586,122 @@ def test_index_cache_miss_returns_warming_and_does_not_refresh_sync(monkeypatch)
 def test_index_cache_miss_renders_autoreload_script(monkeypatch):
     """При status='warming' в страницу должен встраиваться JS автообновления."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
-    monkeypatch.setattr(app, "_cache_get", lambda coin, metric: None)
+    monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: None)
     monkeypatch.setattr(app, "_maybe_refresh_async", lambda *a, **k: None)
 
-    with app.app.test_request_context("/?coin=BTC&metric=iv"):
+    with app.app.test_request_context("/?exchange=bybit&coin=BTC&metric=iv"):
         html = app.index()
 
     assert "window.location.search" in html
 
 
 def test_maybe_refresh_async_populates_cache(monkeypatch):
-    """_maybe_refresh_async должен в фоне записать пару в _cache."""
-    monkeypatch.setattr(app, "get_tickers", lambda base_coin: _make_mock_tickers())
-    monkeypatch.setattr(app, "get_spot_price", lambda tickers: 60000.0)
+    """_maybe_refresh_async должен в фоне записать тройку в _cache.
 
-    # Чистим кеш от возможных следов других тестов.
+    Патчим метод fetch на экземпляре адаптера Bybit (ExchangeConfig frozen,
+    поэтому менять сам adapter нельзя — мокаем именно его метод).
+    """
+    from exchanges import EXCHANGES
+    bybit_adapter = EXCHANGES["bybit"].adapter
+
+    def _stub_fetch(coin):
+        return 60000.0, None, _make_mock_options(base_coin=coin, strike=60000.0)
+
+    monkeypatch.setattr(bybit_adapter, "fetch", _stub_fetch)
+
     with app._cache_lock:
         app._cache.clear()
 
-    # Пара ещё не в кеше.
-    assert app._cache_get("BTC", "iv") is None
+    assert app._cache_get("bybit", "BTC", "iv") is None
 
-    app._maybe_refresh_async("BTC", "iv")
+    app._maybe_refresh_async("bybit", "BTC", "iv")
 
-    # Ждём завершения фоновой задачи (демон-поток). Вешаем мьютекс на
-    # _refreshing, чтобы дождаться, пока пара покинет множество «греется».
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         with app._refreshing_lock:
-            busy = ("BTC", "iv") in app._refreshing
+            busy = ("bybit", "BTC", "iv") in app._refreshing
         if not busy:
             break
         time.sleep(0.02)
 
-    entry = app._cache_get("BTC", "iv")
+    entry = app._cache_get("bybit", "BTC", "iv")
     assert entry is not None
     assert entry["status"] in ("live", "error")
 
 
 def test_maybe_refresh_async_dedups_concurrent_calls(monkeypatch):
-    """Несколько одновременных cache-miss одной пары не должны запускать
+    """Несколько одновременных cache-miss одной тройки не должны запускать
     несколько дублирующих фоновых задач."""
-    monkeypatch.setattr(app, "get_tickers", lambda base_coin: _make_mock_tickers())
-    monkeypatch.setattr(app, "get_spot_price", lambda tickers: 60000.0)
+    from exchanges import EXCHANGES
+    bybit_adapter = EXCHANGES["bybit"].adapter
+
+    def _stub_fetch(coin):
+        return 60000.0, None, _make_mock_options(base_coin=coin, strike=60000.0)
+
+    monkeypatch.setattr(bybit_adapter, "fetch", _stub_fetch)
 
     with app._cache_lock:
         app._cache.clear()
     with app._refreshing_lock:
         app._refreshing.clear()
 
-    # Искусственно пометим пару как «уже греется».
     with app._refreshing_lock:
-        app._refreshing.add(("BTC", "iv"))
+        app._refreshing.add(("bybit", "BTC", "iv"))
 
     started_threads = []
     original_start = threading.Thread.start
 
     def counting_start(self):
         started_threads.append(self.name)
-        # Возвращаемся к реальному start только для НЕ-refresh потоков,
-        # чтобы тест не порождал фоновую сеть.
         if not self.name.startswith("volatility-refresh-"):
             return original_start(self)
 
     monkeypatch.setattr(threading.Thread, "start", counting_start)
 
-    app._maybe_refresh_async("BTC", "iv")
+    app._maybe_refresh_async("bybit", "BTC", "iv")
 
     assert not any(n.startswith("volatility-refresh-") for n in started_threads), \
-        "не должен запускать второй поток для уже греющейся пары"
+        "не должен запускать второй поток для уже греющейся тройки"
 
 
 # --------------------------------------------------------------------------------------
-# Дедлайн на ретраи запросов
+# Сетевой слой net._requests_get_with_retry — дедлайн и успех
 # --------------------------------------------------------------------------------------
 
 def test_requests_get_with_retry_respects_deadline(monkeypatch):
-    """Все попытки падают → общий дедлайн обрывает цикл раньше REQUEST_MAX_ATTEMPTS
-    в случае, если бекофы слишком большие. Гарантирует ограниченность времени."""
-    # Принудительно сжимаем дедлайн, чтобы тест был быстрым, а бекоф — заметным.
-    monkeypatch.setattr(app, "REQUEST_MAX_ATTEMPTS", 10)
-    monkeypatch.setattr(app, "REQUEST_MAX_TOTAL_SECONDS", 0.0)
-    monkeypatch.setattr(app, "REQUEST_BACKOFF_BASE_SECONDS", 1.0)
-    monkeypatch.setattr(app, "REQUEST_BACKOFF_MAX_SECONDS", 5.0)
+    """Все попытки падают → общий дедлайн обрывает цикл раньше max attempts."""
+    import net
+    import requests
+
+    monkeypatch.setattr(net, "REQUEST_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(net, "REQUEST_MAX_TOTAL_SECONDS", 0.0)
+    monkeypatch.setattr(net, "REQUEST_BACKOFF_BASE_SECONDS", 1.0)
+    monkeypatch.setattr(net, "REQUEST_BACKOFF_MAX_SECONDS", 5.0)
 
     def always_fail(*a, **k):
         raise requests.RequestException("boom")
 
-    monkeypatch.setattr(app.requests, "get", always_fail)
+    monkeypatch.setattr(net.requests, "get", always_fail)
 
     started = time.monotonic()
-    with pytest.raises(app.requests.RequestException):
-        app._requests_get_with_retry("http://x", params={}, timeout=1)
+    with pytest.raises(requests.RequestException):
+        net._requests_get_with_retry("http://x", params={}, timeout=1)
     elapsed = time.monotonic() - started
 
-    # Дедлайн 0 + первая попытка падает мгновенно → выходим почти сразу,
-    # НЕ делая 10 попыток с бекофами (что заняло бы десятки секунд).
     assert elapsed < 1.5
 
 
 def test_requests_get_with_retry_succeeds(monkeypatch):
     """Успешный ответ возвращается сразу, без ретраев."""
+    import net
+
     class _FakeResponse:
         def raise_for_status(self):
             pass
         def json(self):
             return {"result": {"list": []}}
 
-    monkeypatch.setattr(app.requests, "get", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(net.requests, "get", lambda *a, **k: _FakeResponse())
 
-    resp = app._requests_get_with_retry("http://x", params={}, timeout=1)
+    resp = net._requests_get_with_retry("http://x", params={}, timeout=1)
     assert resp.json() == {"result": {"list": []}}

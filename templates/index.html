@@ -579,7 +579,7 @@
                     <div class="brand-badge">f</div>
                     <div class="brand-copy">
                         <p class="brand-title">Volatility Analytics</p>
-                        <p class="brand-subtitle">Bybit options monitor for smile and theta structure</p>
+                        <p class="brand-subtitle">{{ exchange_label }} options monitor for smile and theta structure</p>
                     </div>
                 </div>
                 <div class="status-pill">
@@ -598,6 +598,15 @@
 
                 <div class="sidebar-scroll">
                     <form class="controls" id="controls-form" method="get" action="/">
+                        <div class="field">
+                            <label for="exchange">Exchange</label>
+                            <select id="exchange" name="exchange">
+                                {% for ex_key, ex in exchanges.items() %}
+                                <option value="{{ ex_key }}" {% if ex_key == selected_exchange %}selected{% endif %}>{{ ex["label"] }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
                         <div class="field">
                             <label for="coin">Asset</label>
                             <select id="coin" name="coin">
@@ -666,7 +675,7 @@
                             Кеш обновлён в {{ cache_updated_str }} (UTC)
                         {% endif %}
                     </span>
-                    <span style="margin-left:auto; opacity:0.8;">Фоновое обновление каждые 3 мин</span>
+                    <span style="margin-left:auto; opacity:0.8;">Фоновое обновление каждые 5 мин</span>
                 </div>
             </aside>
 
@@ -691,7 +700,7 @@
                 <div class="chart-card">
                     <div class="preloader">
                         <div class="spinner"></div>
-                        <div>Загружаем данные с Bybit…</div>
+                        <div>Загружаем данные с {{ exchange_label }}…</div>
                     </div>
                 </div>
                 {% endif %}
@@ -710,10 +719,12 @@
                 <p>
                     Hover по точкам показывает полный контекст опциона: выбранную метрику, IV, theta,
                     delta, gamma, vega, а также высшие греки (vanna, volga, speed, charm, ultima),
-                    которые считаются локально по модели Блэка — Шоулза. Безрисковая ставка для каждого
-                    опциона определяется автоматически из implied cost-of-carry
-                    (r = ln(underlyingPrice / indexPrice) / T) и выводится отдельной строкой в тултипе.
-                    Для каждой экспирации используется одна непрерывная линия.
+                    которые считаются локально по модели Блэка — Шоулза. Греки первого порядка
+                    берутся из API биржи там, где она их отдаёт (Bybit, Binance), иначе считаются
+                    по БС (Deribit, OKX). Безрисковая ставка для каждого опциона определяется
+                    автоматически из implied cost-of-carry (r = ln(forward/spot) / T) для бирж,
+                    отдающих forward (Bybit, OKX); для Deribit/Binance r = 0. Ставка выводится
+                    отдельной строкой в тултипе. Для каждой экспирации используется одна непрерывная линия.
                 </p>
             </div>
         </div>
@@ -729,9 +740,10 @@
             <div class="modal-body">
                 <p>
                     Метрики, доступные в выпадающем списке. <strong>API</strong> — значение берётся
-                    напрямую из ответа Bybit; <strong>BS</strong> — считается локально по модели
-                    Блэка — Шоулза (Bybit эти греки не отдаёт); <strong>derived</strong> —
-                    нормировка данных API.
+                    напрямую из ответа биржи (если она его отдаёт); <strong>BS</strong> — считается
+                    локально по модели Блэка — Шоулза (для бирж, не отдающих греки:
+                    Deribit/OKX, либо для высших греков на любой бирже);
+                    <strong>derived</strong> — нормировка данных API.
                 </p>
                 <div style="overflow-x: auto;">
                     <table class="glossary-table">
@@ -779,10 +791,16 @@
                 form.submit();
             }
         }
+        // coin/metric меняются без потери других параметров.
         ['coin', 'metric'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.addEventListener('change', submitForm);
         });
+        // При смене биржи форма сабмитится с текущей монетой: сервер оставит её,
+        // если она поддерживается новой биржей (BTC/ETH переходят между всеми
+        // биржами), иначе откатит на первую поддерживаемую.
+        var exEl = document.getElementById('exchange');
+        if (exEl) exEl.addEventListener('change', submitForm);
     })();
 
     // Модалки hint/glossary: открытие чип-кнопками, закрытие по крестику/backdrop/Esc.
@@ -825,6 +843,10 @@
     // и не меняется при переключении метрики.
     (function () {
         var COIN = {{ selected_coin|tojson }};
+        var EXCHANGE = {{ selected_exchange|tojson }};
+        // Ключ серий включает биржу: улыбки одной монеты на разных биржах
+        // имеют разные экспирации, и скрытые серии не должны «протекать».
+        var SERIES_SCOPE = EXCHANGE + '|' + COIN;
         var STORAGE_KEY = "vsm_hidden_series";
 
         function readStore() {
@@ -835,16 +857,16 @@
             try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch (e) {}
         }
         function getHidden() {
-            return readStore()[COIN] || [];
+            return readStore()[SERIES_SCOPE] || [];
         }
         function setHidden(arr) {
             var store = readStore();
-            store[COIN] = arr;
+            store[SERIES_SCOPE] = arr;
             writeStore(store);
         }
         function clearHidden() {
             var store = readStore();
-            delete store[COIN];
+            delete store[SERIES_SCOPE];
             writeStore(store);
         }
 
@@ -956,14 +978,14 @@
     </script>
     {% elif cache_status == 'live' %}
     <script>
-        // Автообновление страницы раз в 3 минуты для отображения свежих данных.
+        // Автообновление страницы раз в 5 минут для отображения свежих данных.
         // Серверный кэш обновляется фоновым воркером с таким же интервалом.
         (function () {
             var params = new URLSearchParams(window.location.search);
             setInterval(function () {
                 params.set('_t', Date.now().toString());
                 window.location.search = params.toString();
-            }, 180000);
+            }, 300000);
         })();
     </script>
     {% endif %}
