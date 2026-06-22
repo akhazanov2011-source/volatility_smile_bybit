@@ -42,7 +42,7 @@ def test_all_pairs_covers_every_coin():
 
 def test_supported_coins_per_exchange():
     assert exchanges.supported_coins("bybit") == ["BTC", "ETH", "SOL", "XRP", "DOGE", "XAUTUSDT"]
-    assert exchanges.supported_coins("deribit") == ["BTC", "ETH", "SOL"]
+    assert exchanges.supported_coins("deribit") == ["BTC", "ETH"]
     assert exchanges.supported_coins("okx") == ["BTC", "ETH"]
     assert exchanges.supported_coins("binance") == ["BTC", "ETH", "SOL", "XRP", "DOGE"]
 

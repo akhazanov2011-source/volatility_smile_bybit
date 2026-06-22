@@ -41,7 +41,6 @@ MONTH_MAP = {
 COIN_ALIASES = {
     "BTC": {"currency": "BTC", "index_name": "btc_usd"},
     "ETH": {"currency": "ETH", "index_name": "eth_usd"},
-    "SOL": {"currency": "SOL", "index_name": "sol_usd"},
 }
 
 # Instrument: <COIN>-DDMMMYY-STRIKE-C/P

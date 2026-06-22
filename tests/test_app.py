@@ -496,14 +496,14 @@ def test_index_template_exchange_label_in_subtitle(monkeypatch):
 
 
 def test_index_coins_filtered_by_exchange(monkeypatch):
-    """При выборе deribit селектор монет должен содержать только BTC/ETH/SOL."""
+    """При выборе deribit селектор монет должен содержать только BTC/ETH."""
     monkeypatch.setattr(app, "_ensure_worker_started", lambda: None)
     monkeypatch.setattr(app, "_cache_get", lambda ex, c, m: _stub_cache_entry())
 
     with app.app.test_request_context("/?exchange=deribit&coin=BTC&metric=iv"):
         html = app.index()
 
-    # Deribit поддерживает BTC/ETH/SOL — не должно быть DOGE/XAUTUSDT
+    # Deribit поддерживает BTC/ETH — не должно быть DOGE/XAUTUSDT
     assert "DOGE" not in html
     assert "XAUTUSDT" not in html
 
