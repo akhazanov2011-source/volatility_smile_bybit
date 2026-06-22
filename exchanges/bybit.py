@@ -163,7 +163,10 @@ class BybitAdapter(DataSource):
             options.append(
                 NormalizedOption(
                     symbol=symbol,
-                    base_coin=parsed["base_coin"],
+                    # UI-имя монеты (не префикс символа): для XAUTUSDT это
+                    # "XAUTUSDT", а не "XAUT" — collect_strikes в app.py
+                    # фильтрует именно по UI-имени.
+                    base_coin=coin,
                     strike=parsed["strike"],
                     option_type=parsed["option_type"],
                     expiry_dt=parsed["expiry_dt"],

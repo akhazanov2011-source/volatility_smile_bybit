@@ -20,6 +20,12 @@ Spot/index: ``GET /api/v5/market/index-tickers?instId=BTC-USD`` → ``idxPx``.
   * ``instType=OPTION`` (полное слово), не ``OPT``.
 
 instId: ``BTC-USD_UM-260626-61000-C`` (сегмент семейства ``_UM`` обязателен).
+
+Эндпоинт opt-summary?uly=BTC-USD возвращает вперемешку два семейства: USDT-
+margined (``BTC-USD_UM-...``, премия в USDT) и coin-margined (``BTC-USD-...``,
+премия в BTC). Берём только ``_UM``: у семейств одинаковые (expiry, strike,
+type), но разные fwdPx/markVol — без фильтрации на одном страйке получается
+два IV и улыбка «рвётся».
 """
 
 import threading
@@ -143,6 +149,15 @@ class OkxAdapter(DataSource):
                 # Нет описания инструмента → нельзя определить страйк/экспирацию.
                 continue
 
+            # Эндпоинт opt-summary?uly=BTC-USD отдаёт вперемешку два семейства:
+            # USDT-margined (BTC-USD_UM-...) и coin-margined (BTC-USD-...,
+            # премия в BTC). У них одинаковые (expiry, strike, type), но разные
+            # fwdPx/markVol. Без фильтрации обе точки попадают в один бакет
+            # улыбки и на одном страйке дают два разных IV → «рваный» график.
+            # Оставляем только _UM (USDT-margined) — согласовано с Bybit/Binance.
+            if "_UM-" not in inst_id:
+                continue
+
             expiry_dt = _ms_to_datetime(instr.get("expTime"))
             strike = _to_float(instr.get("stk"))
             opt_type_raw = instr.get("optType")
@@ -164,7 +179,7 @@ class OkxAdapter(DataSource):
                     option_type=option_type,
                     expiry_dt=expiry_dt,
                     mark_iv=mark_iv,
-                    mark_price=None,  # в opt-summary markPx нет
+                    mark_price=None,  # в opt-summary markPx нет → доменный слой досчитает по БС
                     delta=None,       # греков в bulk нет → BS
                     gamma=None,
                     theta=None,

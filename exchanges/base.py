@@ -29,7 +29,8 @@ class NormalizedOption:
         (35.22) и адаптер делит на 100;
       * ``mark_price`` — приведён к USDT для сопоставимости между биржами
         (Deribit котирует премию в BTC и конвертирует по spot; Bybit/Binance
-        изначально в USDT; OKX не отдаёт mark_price в opt-summary → None);
+        изначально в USDT; OKX не отдаёт mark_price в opt-summary → None,
+        доменный слой досчитает его по модели Блэка — Шоулза);
       * ``underlying_price`` — цена базового актива (перпетуала/форварда)
         для per-option implied rate; ``None`` если биржа не отдаёт.
     """

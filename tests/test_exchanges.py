@@ -131,6 +131,57 @@ def test_bybit_unsupported_coin_raises():
         adapter.fetch("NOTACOIN")
 
 
+def test_bybit_gold_option_base_coin_matches_ui_name(monkeypatch):
+    """Регрессия: золото торгуется на Bybit под baseCoin=XAUT, поэтому
+    символы начинаются с 'XAUT', а UI-имя монеты — 'XAUTUSDT'. Адаптер
+    обязан класть в option именно UI-имя ('XAUTUSDT'), иначе collect_strikes
+    в app.py (фильтрует по UI-имени) отбросит все золото-опционы → 0 страйков
+    → 'Не удалось загрузить данные с Bybit'.
+
+    Воспроизводит баг XAUTUSDT→XAUT из #gold-broken.
+    """
+    bybit_resp = {
+        "result": {
+            "list": [
+                {
+                    "symbol": "XAUT-28MAR26-4200-C-USDT",
+                    "markIv": "0.35",
+                    "markPrice": "120",
+                    "delta": "0.5",
+                    "gamma": "0.0001",
+                    "theta": "-2.0",
+                    "vega": "10.0",
+                    "indexPrice": "4180",
+                    "underlyingPrice": "4190",
+                },
+                {
+                    "symbol": "XAUT-28MAR26-4200-P-USDT",
+                    "markIv": "0.38",
+                    "markPrice": "80",
+                    "delta": "-0.5",
+                    "gamma": "0.0001",
+                    "theta": "-1.5",
+                    "vega": "9.0",
+                    "indexPrice": "4180",
+                    "underlyingPrice": "4190",
+                },
+            ]
+        }
+    }
+    adapter = BybitAdapter()
+    monkeypatch.setattr(adapter, "get_tickers", lambda base_coin: bybit_resp["result"]["list"])
+
+    spot, forward, options = adapter.fetch("XAUTUSDT")
+    assert spot == 4180.0
+    assert forward is None
+    assert len(options) == 2
+    # Ключевая проверка регрессии: base_coin = UI-имя, а не префикс символа.
+    assert all(o.base_coin == "XAUTUSDT" for o in options)
+    # Имитируем фильтр collect_strikes из app.py — должны пройти все опционы.
+    strikes = sorted({o.strike for o in options if o.base_coin == "XAUTUSDT"})
+    assert strikes == [4200.0]
+
+
 # --------------------------------------------------------------------------------------
 # Deribit
 # --------------------------------------------------------------------------------------
@@ -236,6 +287,12 @@ def test_okx_adapter_merges_summary_and_instruments(monkeypatch):
         "BTC-USD_UM-260626-99999-C": {  # нет в instruments → пропускается
             "instId": "BTC-USD_UM-260626-99999-C", "markVol": "0.6", "fwdPx": "64053.2",
         },
+        # Coin-margined (без _UM) — то же семейство страйка/экспирации, но
+        # премия в BTC. Должно отбрасываться, иначе дублирует страйк и рвёт
+        # улыбку. Регрессия на баг со «рванным» графиком OKX BTC.
+        "BTC-USD-260626-61000-C": {
+            "instId": "BTC-USD-260626-61000-C", "markVol": "0.9", "fwdPx": "64060.0",
+        },
     }
     instruments_by_id = {
         inst_id: {
@@ -244,6 +301,11 @@ def test_okx_adapter_merges_summary_and_instruments(monkeypatch):
         },
         "BTC-USD_UM-260626-61000-P": {
             "instId": "BTC-USD_UM-260626-61000-P", "optType": "P", "stk": "61000",
+            "expTime": "1782115200000", "uly": "BTC-USD",
+        },
+        # Описание coin-margined есть, но он всё равно отбрасывается по фильтру _UM.
+        "BTC-USD-260626-61000-C": {
+            "instId": "BTC-USD-260626-61000-C", "optType": "C", "stk": "61000",
             "expTime": "1782115200000", "uly": "BTC-USD",
         },
     }
@@ -255,7 +317,9 @@ def test_okx_adapter_merges_summary_and_instruments(monkeypatch):
     spot, forward, options = adapter.fetch("BTC")
     assert spot == 64088.4
     assert forward is None  # forward per-record (underlying_price = fwdPx)
-    assert len(options) == 2  # третий пропущен (нет в instruments)
+    assert len(options) == 2  # coin-margined (BTC-USD-...) и запись без instruments отброшены
+    # Ни один остаточный option не должен принадлежать coin-margined семейству.
+    assert all(o.symbol.startswith("BTC-USD_UM-") for o in options)
     call = next(o for o in options if o.option_type == "Call")
     assert call.mark_iv == pytest.approx(0.448013318450148)  # доля единицы, без /100
     assert call.strike == 61000.0

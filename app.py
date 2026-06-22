@@ -79,10 +79,11 @@ SUPPORTED_METRICS = {
         "value_key": "mark_price",
         "source": "api",
         "description": (
-            "Маркировочная цена опциона (markPrice из ответа биржи). Биржевая "
-            "оценка текущей справедливой цены. На графике показываются "
-            "OTM-премии: Put ниже spot и Call выше spot. 注意: у Deribit премия "
-            "в базовом активе (BTC), у Bybit/Binance — в USDT."
+            "Маркировочная цена опциона. Берётся из API биржи (если отдаётся), "
+            "иначе считается по модели Блэка — Шоулза (OKX не отдаёт markPx в "
+            "opt-summary). Биржевая оценка текущей справедливой цены. На графике "
+            "показываются OTM-премии: Put ниже spot и Call выше spot. 注意: у "
+            "Deribit премия в базовом активе (BTC), у Bybit/Binance/OKX — в USDT."
         ),
     },
     "delta": {
@@ -251,8 +252,9 @@ def fetch_and_prepare_data(options, min_strike, max_strike, spot_price):
     точки улыбки. ``options`` — list[NormalizedOption].
 
     Греки, отсутствующие в API биржи (delta/gamma/theta/vega = None),
-    досчитываются локально по модели Блэка — Шоулза. Высшие греки (vanna,
-    volga, speed, charm, ultima) всегда считаются локально.
+    досчитываются локально по модели Блэка — Шоулза. mark_price при отсутствии
+    в API (OKX) также считается по БС. Высшие греки (vanna, volga, speed,
+    charm, ultima) всегда считаются локально.
     """
     raw_by_expiry = {}
     now_dt = datetime.now()
@@ -311,7 +313,13 @@ def fetch_and_prepare_data(options, min_strike, max_strike, spot_price):
         if expiry not in raw_by_expiry:
             raw_by_expiry[expiry] = {"Call": [], "Put": []}
 
-        mark_price_val = opt.mark_price
+        # mark_price: из API, если есть; иначе по БС. OKX не отдаёт markPx в
+        # bulk-эндпоинте opt-summary → None, считаем теор. цену локально.
+        mark_price_val = opt.mark_price if opt.mark_price is not None else (
+            bs_greeks.bs_call_price(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
+            if bs_type == "call"
+            else bs_greeks.bs_put_price(spot_price, strike, time_to_expiry, risk_free_rate, sigma)
+        )
 
         raw_by_expiry[expiry][opt_type].append(
             {
@@ -615,7 +623,8 @@ def _build_chart_entry(selected_exchange, selected_coin, selected_metric):
         if spot_price is None:
             raise ValueError("Не удалось определить spot цену для выбранной монеты.")
 
-        # base_coin для фильтрации — UI-имя монеты; адаптеры кладут его в option.
+        # Фильтр страйков идёт по UI-имени монеты: адаптеры кладут в option
+        # именно его (Bybit XAUTUSDT, OKX и т.д.), а не префикс символа.
         strikes = collect_strikes(options, coin)
         total_strikes = len(strikes)
         min_strike, max_strike, displayed_strikes = get_strike_window(strikes, spot_price)

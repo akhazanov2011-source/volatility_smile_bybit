@@ -249,6 +249,53 @@ def test_fetch_and_prepare_data_fills_greeks_when_api_missing():
     assert call_item["theta"] is not None and call_item["theta"] < 0
 
 
+def test_fetch_and_prepare_data_fills_mark_price_when_api_missing():
+    """mark_price=None (как у OKX — opt-summary не отдаёт markPx) →
+    fetch_and_prepare_data досчитывает его по модели Блэка — Шоулза, и значение
+    совпадает с прямой BS-ценой от тех же аргументов. Также theta_pct
+    становится не-None, т.к. теперь делится на вычисленную цену."""
+    import bs_greeks
+
+    expiry = datetime.now() + timedelta(days=90)
+    strike = 60000.0
+    spot = 60000.0
+    sigma = 0.6
+    # forward = spot → implied rate = 0, как у _make_option по умолчанию.
+    options = [
+        NormalizedOption(
+            symbol="BTC-OKX-60000-C", base_coin="BTC", strike=strike,
+            option_type="Call", expiry_dt=expiry,
+            mark_iv=sigma, mark_price=None, delta=None, gamma=None,
+            theta=None, vega=None, underlying_price=spot,
+        ),
+        NormalizedOption(
+            symbol="BTC-OKX-60000-P", base_coin="BTC", strike=strike,
+            option_type="Put", expiry_dt=expiry,
+            mark_iv=sigma, mark_price=None, delta=None, gamma=None,
+            theta=None, vega=None, underlying_price=spot,
+        ),
+    ]
+    _, by_expiry, _ = app.fetch_and_prepare_data(options, 59000.0, 61000.0, spot)
+    expiry_key = list(by_expiry.keys())[0]
+    call_item = by_expiry[expiry_key]["Call"][0]
+    put_item = by_expiry[expiry_key]["Put"][0]
+
+    # Считаем T тем же способом, что и в fetch_and_prepare_data.
+    now_dt = datetime.now()
+    seconds_to_expiry = (expiry - now_dt).total_seconds()
+    time_to_expiry = seconds_to_expiry / bs_greeks.SECONDS_PER_YEAR
+
+    expected_call = bs_greeks.bs_call_price(spot, strike, time_to_expiry, 0.0, sigma)
+    expected_put = bs_greeks.bs_put_price(spot, strike, time_to_expiry, 0.0, sigma)
+
+    assert call_item["mark_price"] is not None
+    assert call_item["mark_price"] == pytest.approx(expected_call)
+    assert put_item["mark_price"] == pytest.approx(expected_put)
+    # theta_pct теперь вычислим — не None, т.к. mark_price больше не None.
+    assert call_item["theta_pct"] is not None
+
+
+
 def test_build_hover_text_shows_bold_mark_price_after_strike():
     item = {
         "symbol": "BTC-TEST-60000-C-USDT",
