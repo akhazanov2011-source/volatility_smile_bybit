@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Volatility Smile</title>
+    <!-- Анти-мерцание: мгновенно ставим data-theme до рендера CSS -->
+    <script>(function(){try{var t=localStorage.getItem('vsm_theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}})();</script>
     <style>
         :root {
             --bg: #f0f2f5;
@@ -19,6 +21,71 @@
             --danger-text: #b42318;
             --shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.06);
             --topbar-h: 60px;
+            /* Переменные для хардкодов, заменяемых на тёмную тему */
+            --border-light: #e4e6eb;
+            --border-muted: #eceef2;
+            --border-stat: #edf0f4;
+            --border-hover: #c4c9d2;
+            --border-chart: #e5e9f0;
+            --border-error: #f1c0c0;
+            --input-bg: #f5f6f7;
+            --topbar-bg: rgba(255, 255, 255, 0.94);
+            --brand-grad-from: #2d88ff;
+            --brand-grad-to: #1877f2;
+            --status-pill-bg: #edf3ff;
+            --status-pill-text: #1b4ea3;
+            --panel-grad-from: #ffffff;
+            --panel-grad-to: #fafbfc;
+            --chart-bg: #ffffff;
+            --modal-overlay-bg: rgba(28, 30, 33, 0.45);
+            --spinner-border: #e4e6eb;
+            --cache-dot-warm: #f0a500;
+            --glossary-api-bg: #e7f6ec;
+            --glossary-api-text: #1f7a3a;
+            --glossary-bs-bg: #eef3ff;
+            --glossary-bs-text: #1b4ea3;
+            --glossary-derived-bg: #fdf3e7;
+            --glossary-derived-text: #8a5a0b;
+        }
+
+        /* Тёмная тема — GitHub Dark inspired */
+        [data-theme="dark"] {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --surface-muted: #1c2128;
+            --text: #e6edf3;
+            --muted: #8b949e;
+            --accent: #4493f8;
+            --accent-strong: #316dca;
+            --border: #30363d;
+            --success: #3fb950;
+            --danger-bg: #3d1014;
+            --danger-text: #f85149;
+            --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
+            --border-light: #30363d;
+            --border-muted: #21262d;
+            --border-stat: #21262d;
+            --border-hover: #484f58;
+            --border-chart: #30363d;
+            --border-error: #6e3630;
+            --input-bg: #0d1117;
+            --topbar-bg: rgba(22, 27, 34, 0.94);
+            --brand-grad-from: #4493f8;
+            --brand-grad-to: #2a6fdb;
+            --status-pill-bg: #1c2128;
+            --status-pill-text: #79c0ff;
+            --panel-grad-from: #161b22;
+            --panel-grad-to: #1c2128;
+            --chart-bg: #0d1117;
+            --modal-overlay-bg: rgba(0, 0, 0, 0.6);
+            --spinner-border: #30363d;
+            --cache-dot-warm: #d29922;
+            --glossary-api-bg: #0f2918;
+            --glossary-api-text: #3fb950;
+            --glossary-bs-bg: #0d1f3c;
+            --glossary-bs-text: #79c0ff;
+            --glossary-derived-bg: #2c1d0a;
+            --glossary-derived-text: #d29922;
         }
 
         * {
@@ -45,9 +112,9 @@
 
         .topbar {
             flex: 0 0 auto;
-            background: rgba(255, 255, 255, 0.94);
+            background: var(--topbar-bg);
             backdrop-filter: blur(12px);
-            border-bottom: 1px solid #e4e6eb;
+            border-bottom: 1px solid var(--border-light);
             box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
         }
 
@@ -73,7 +140,7 @@
             width: 36px;
             height: 36px;
             border-radius: 50%;
-            background: linear-gradient(135deg, #2d88ff, #1877f2);
+            background: linear-gradient(135deg, var(--brand-grad-from), var(--brand-grad-to));
             color: white;
             display: grid;
             place-items: center;
@@ -105,8 +172,8 @@
             align-items: center;
             gap: 8px;
             border-radius: 999px;
-            background: #edf3ff;
-            color: #1b4ea3;
+            background: var(--status-pill-bg);
+            color: var(--status-pill-text);
             padding: 8px 12px;
             font-size: 0.86rem;
             font-weight: 600;
@@ -117,6 +184,29 @@
             height: 8px;
             border-radius: 50%;
             background: var(--success);
+        }
+
+        /* Кнопка переключения темы */
+        .theme-toggle {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 999px;
+            border: 1px solid var(--border-light);
+            background: var(--surface);
+            color: var(--text);
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: background 0.12s ease, border-color 0.12s ease;
+            flex-shrink: 0;
+            line-height: 1;
+        }
+
+        .theme-toggle:hover {
+            background: var(--surface-muted);
+            border-color: var(--border-hover);
         }
 
         /* Рабочая зона под шапкой: двухколоночный grid (sidebar | chart-area),
@@ -135,7 +225,7 @@
 
         .card {
             background: var(--surface);
-            border: 1px solid #e4e6eb;
+            border: 1px solid var(--border-light);
             border-radius: 18px;
             box-shadow: var(--shadow);
         }
@@ -157,8 +247,8 @@
 
         .panel-head {
             padding: 14px 18px;
-            border-bottom: 1px solid #eceef2;
-            background: linear-gradient(180deg, #ffffff, #fafbfc);
+            border-bottom: 1px solid var(--border-muted);
+            background: linear-gradient(180deg, var(--panel-grad-from), var(--panel-grad-to));
             flex: 0 0 auto;
         }
 
@@ -179,8 +269,8 @@
             flex-direction: column;
             gap: 12px;
             padding: 16px 18px;
-            background: #ffffff;
-            border-bottom: 1px solid #eceef2;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border-muted);
         }
 
         .field {
@@ -201,7 +291,7 @@
             border-radius: 10px;
             border: 1px solid var(--border);
             padding: 0 12px;
-            background: #f5f6f7;
+            background: var(--input-bg);
             color: var(--text);
             font-size: 0.94rem;
             font-family: inherit;
@@ -227,7 +317,7 @@
             padding: 10px 12px;
             border-radius: 12px;
             background: var(--surface-muted);
-            border: 1px solid #edf0f4;
+            border: 1px solid var(--border-stat);
             min-width: 0;
         }
 
@@ -250,7 +340,7 @@
 
         .metric-description {
             padding: 10px 18px;
-            border-bottom: 1px solid #eceef2;
+            border-bottom: 1px solid var(--border-muted);
             background: var(--surface-muted);
             font-size: 0.84rem;
             color: var(--muted);
@@ -271,7 +361,7 @@
             font-size: 0.8rem;
             color: var(--muted);
             flex: 0 0 auto;
-            border-top: 1px solid #eceef2;
+            border-top: 1px solid var(--border-muted);
             border-radius: 0 0 18px 18px;
         }
 
@@ -289,7 +379,7 @@
         }
 
         .cache-bar .dot.warm {
-            background: #f0a500;
+            background: var(--cache-dot-warm);
         }
 
         /* Правая колонка: тулбар + упругий график. */
@@ -335,7 +425,7 @@
 
         .chip:hover {
             background: var(--surface-muted);
-            border-color: #c4c9d2;
+            border-color: var(--border-hover);
         }
 
         /* Вторичные (outline) кнопки управления видимостью серий. */
@@ -355,16 +445,16 @@
 
         .series-btn:hover {
             background: var(--surface-muted);
-            border-color: #c4c9d2;
+            border-color: var(--border-hover);
         }
 
         /* Контейнер графика занимает всё оставшееся место и отдаёт высоту Plotly. */
         .chart-card {
             flex: 1 1 auto;
             min-height: 0;
-            background: white;
+            background: var(--chart-bg);
             border-radius: 18px;
-            border: 1px solid #e5e9f0;
+            border: 1px solid var(--border-chart);
             overflow: hidden;
             display: flex;
             flex-direction: column;
@@ -384,7 +474,7 @@
             border-radius: 14px;
             background: var(--danger-bg);
             color: var(--danger-text);
-            border: 1px solid #f1c0c0;
+            border: 1px solid var(--border-error);
             font-weight: 600;
         }
 
@@ -403,7 +493,7 @@
         .spinner {
             width: 34px;
             height: 34px;
-            border: 3px solid #e4e6eb;
+            border: 3px solid var(--spinner-border);
             border-top-color: var(--accent);
             border-radius: 50%;
             animation: spin 0.9s linear infinite;
@@ -418,7 +508,7 @@
             position: fixed;
             inset: 0;
             z-index: 50;
-            background: rgba(28, 30, 33, 0.45);
+            background: var(--modal-overlay-bg);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -447,7 +537,7 @@
             justify-content: space-between;
             gap: 12px;
             padding: 16px 20px;
-            border-bottom: 1px solid #eceef2;
+            border-bottom: 1px solid var(--border-muted);
             position: sticky;
             top: 0;
             background: var(--surface);
@@ -496,7 +586,7 @@
         .glossary-table td {
             text-align: left;
             padding: 10px 12px;
-            border-bottom: 1px solid #eceef2;
+            border-bottom: 1px solid var(--border-muted);
             vertical-align: top;
         }
 
@@ -527,18 +617,18 @@
         }
 
         .glossary-source.api {
-            background: #e7f6ec;
-            color: #1f7a3a;
+            background: var(--glossary-api-bg);
+            color: var(--glossary-api-text);
         }
 
         .glossary-source.bs {
-            background: #eef3ff;
-            color: #1b4ea3;
+            background: var(--glossary-bs-bg);
+            color: var(--glossary-bs-text);
         }
 
         .glossary-source.derived {
-            background: #fdf3e7;
-            color: #8a5a0b;
+            background: var(--glossary-derived-bg);
+            color: var(--glossary-derived-text);
         }
 
         .glossary-desc {
@@ -582,9 +672,12 @@
                         <p class="brand-subtitle">{{ exchange_label }} options monitor for smile and theta structure</p>
                     </div>
                 </div>
-                <div class="status-pill">
-                    <span class="status-dot"></span>
-                    Live public market snapshot
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Переключить тему">☀️</button>
+                    <div class="status-pill">
+                        <span class="status-dot"></span>
+                        Live public market snapshot
+                    </div>
                 </div>
             </div>
         </header>
@@ -831,6 +924,128 @@
                 document.querySelectorAll('.modal-overlay:not([hidden])').forEach(close);
             }
         });
+    })();
+    </script>
+
+    <script>
+    // Переключение светлой / тёмной темы. Тема хранится в localStorage и
+    // переживает перезагрузки. Plotly-график обновляется через relayout/restyle.
+    (function () {
+        var STORAGE_KEY = 'vsm_theme';
+        var toggleBtn = document.getElementById('theme-toggle');
+
+        function isDark() {
+            return document.documentElement.getAttribute('data-theme') === 'dark';
+        }
+
+        function setTheme(dark) {
+            if (dark) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+            }
+            try {
+                localStorage.setItem(STORAGE_KEY, dark ? 'dark' : 'light');
+            } catch (e) {}
+            if (toggleBtn) {
+                toggleBtn.textContent = dark ? '🌙' : '☀️';
+            }
+            applyChartTheme(dark);
+        }
+
+        // Обновляем цвета Plotly-графика без перезагрузки страницы.
+        function applyChartTheme(dark) {
+            if (!window.Plotly) return;
+            var gd = document.querySelector('.js-plotly-plot');
+            if (!gd || !gd.data) return;
+
+            var layoutUpdate = {};
+
+            if (dark) {
+                layoutUpdate.plot_bgcolor = '#0d1117';
+                layoutUpdate.paper_bgcolor = '#0d1117';
+                layoutUpdate.font = { color: '#e6edf3', family: 'Helvetica, Arial, sans-serif' };
+                layoutUpdate.xaxis = { gridcolor: 'rgba(48, 54, 61, 0.4)', zeroline: false };
+                layoutUpdate.yaxis = { gridcolor: 'rgba(48, 54, 61, 0.4)' };
+                layoutUpdate.hoverlabel = {
+                    bgcolor: 'rgba(22, 27, 34, 0.98)',
+                    bordercolor: '#484f58',
+                    font: { color: '#e6edf3', family: 'Helvetica, Arial, sans-serif' }
+                };
+                layoutUpdate.legend = {
+                    bgcolor: 'rgba(22, 27, 34, 0.96)',
+                    bordercolor: 'rgba(48, 54, 61, 0.8)',
+                    font: { color: '#e6edf3' }
+                };
+                layoutUpdate.shapes = [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: '#f85149', width: 2, dash: 'dash' }, layer: 'below' }];
+                layoutUpdate.annotations = [{ x: 0, y: 1.02, xref: 'x', yref: 'paper', text: gd.layout.annotations && gd.layout.annotations[0] && gd.layout.annotations[0].text ? gd.layout.annotations[0].text : '', showarrow: false, font: { size: 11, color: '#f85149' }, bgcolor: 'rgba(22, 27, 34, 0.85)' }];
+            } else {
+                layoutUpdate.plot_bgcolor = '#ffffff';
+                layoutUpdate.paper_bgcolor = '#ffffff';
+                layoutUpdate.font = { color: '#1c1e21', family: 'Helvetica, Arial, sans-serif' };
+                layoutUpdate.xaxis = { gridcolor: 'rgba(176, 184, 196, 0.24)', zeroline: false };
+                layoutUpdate.yaxis = { gridcolor: 'rgba(176, 184, 196, 0.24)' };
+                layoutUpdate.hoverlabel = {
+                    bgcolor: 'rgba(255, 255, 255, 0.98)',
+                    bordercolor: '#7f8ea3',
+                    font: { color: '#111827', family: 'Helvetica, Arial, sans-serif' }
+                };
+                layoutUpdate.legend = {
+                    bgcolor: 'rgba(255, 255, 255, 0.96)',
+                    bordercolor: 'rgba(207, 214, 228, 0.8)',
+                    font: { color: '#1c1e21' }
+                };
+                layoutUpdate.shapes = [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'red', width: 2, dash: 'dash' }, layer: 'below' }];
+                layoutUpdate.annotations = [{ x: 0, y: 1.02, xref: 'x', yref: 'paper', text: gd.layout.annotations && gd.layout.annotations[0] && gd.layout.annotations[0].text ? gd.layout.annotations[0].text : '', showarrow: false, font: { size: 11, color: 'red' }, bgcolor: 'rgba(255, 255, 255, 0.8)' }];
+            }
+
+            // Сохраняем текущую позицию spot-линии
+            if (gd.layout.shapes && gd.layout.shapes[0]) {
+                var spotX = gd.layout.shapes[0].x0;
+                layoutUpdate.shapes[0].x0 = spotX;
+                layoutUpdate.shapes[0].x1 = spotX;
+            }
+            if (gd.layout.annotations && gd.layout.annotations[0]) {
+                var spotAnnX = gd.layout.annotations[0].x;
+                layoutUpdate.annotations[0].x = spotAnnX;
+            }
+
+            var markerColor = dark ? 'rgba(0,0,0,0)' : '#ffffff';
+            var markerUpdates = gd.data.map(function () {
+                return { 'marker.line.color': markerColor };
+            });
+
+            Plotly.relayout(gd, layoutUpdate);
+            if (gd.data.length > 0) {
+                Plotly.restyle(gd, markerUpdates);
+            }
+        }
+
+        // Ждём готовности Plotly при загрузке
+        function whenPlotlyReady(cb) {
+            if (window.Plotly && document.querySelector('.js-plotly-plot')) { cb(); return; }
+            var tries = 0;
+            var timer = setInterval(function () {
+                tries++;
+                if (window.Plotly && document.querySelector('.js-plotly-plot')) { clearInterval(timer); cb(); }
+                else if (tries > 50) { clearInterval(timer); }
+            }, 100);
+        }
+
+        whenPlotlyReady(function () {
+            // Иконка кнопки соответствует текущей теме
+            if (toggleBtn) {
+                toggleBtn.textContent = isDark() ? '🌙' : '☀️';
+            }
+            // Применяем тему к Plotly-графику
+            applyChartTheme(isDark());
+        });
+
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', function () {
+                setTheme(!isDark());
+            });
+        }
     })();
     </script>
 
