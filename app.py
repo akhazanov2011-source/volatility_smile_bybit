@@ -425,7 +425,7 @@ def build_figure(
                 legendgrouptitle_text=label_date,
                 showlegend=True,
                 line=dict(color=color, width=2, dash="solid"),
-                marker=dict(size=7, symbol="circle", line=dict(width=2, color="white")),
+                marker=dict(size=7, symbol="circle", line=dict(width=2, color="#ffffff")),
                 hovertext=[
                     build_hover_text(item, label_date, days_to_expiry, selected_metric)
                     for item in unique_points
