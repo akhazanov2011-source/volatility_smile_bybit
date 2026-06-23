@@ -1010,7 +1010,7 @@
                 layoutUpdate.annotations[0].x = spotAnnX;
             }
 
-            var markerColor = dark ? '#0d1117' : '#ffffff';
+            var markerColor = dark ? 'rgba(0,0,0,0)' : '#ffffff';
             var markerUpdates = gd.data.map(function () {
                 return { 'marker.line.color': markerColor };
             });
