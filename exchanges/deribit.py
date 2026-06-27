@@ -170,6 +170,9 @@ class DeribitAdapter(DataSource):
                     theta=None,
                     vega=None,
                     underlying_price=None,  # forward в bulk нет → r = 0
+                    # open_interest Deribit — уже в единицах базового актива
+                    # (контракт опциона = 1 BTC/ETH), умножение не требуется.
+                    open_interest=_to_float(rec.get("open_interest")),
                 )
             )
 

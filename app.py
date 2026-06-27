@@ -169,6 +169,20 @@ SUPPORTED_METRICS = {
             "весьма далёкими от денег опционами (wing options)."
         ),
     },
+    "open_interest": {
+        "label": "Open Interest",
+        "axis_title": "Open Interest (coins)",
+        "value_key": "open_interest",
+        "source": "api",
+        "description": (
+            "Открытый интерес — число открытых позиций по опциону, приведённое к "
+            "единицам базового актива (BTC/ETH/…). Берётся напрямую из API биржи: "
+            "Bybit отдаёт контракты (умножаем на размер контракта), Deribit — "
+            "сразу в монетах, OKX — поле oiCcy. Binance не отдаёт OI доступным "
+            "эндпоинтом → для неё значение недоступно. Показывает, где реально "
+            "сосредоточены позиции рынка, независимо от цены опциона."
+        ),
+    },
 }
 DEFAULT_METRIC = "iv"
 
@@ -337,6 +351,7 @@ def fetch_and_prepare_data(options, min_strike, max_strike, spot_price):
                 "speed": speed_val,
                 "charm": charm_val,
                 "ultima": ultima_val,
+                "open_interest": opt.open_interest,
                 "risk_free_rate": risk_free_rate,
                 "symbol": opt.symbol,
                 "is_otm": (
@@ -528,6 +543,22 @@ def _fmt(value, fmt):
     return f"{num:{fmt}}"
 
 
+def format_oi(value):
+    """Компактный формат открытого интереса в монетах базового актива.
+
+    Группирует разряды и обрезает хвост: ``1234.5`` → ``1 234.5``, ``0.05`` →
+    ``0.050``. None/недоступно → 'N/A'. Используется в тултипе точки.
+    """
+    num = parse_numeric(value)
+    if num is None:
+        return "N/A"
+    if abs(num) >= 1000:
+        return f"{num:,.1f}"
+    if abs(num) >= 1:
+        return f"{num:,.2f}"
+    return f"{num:.4g}"
+
+
 def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     option_type = item.get("option_type", "Call")
     delta_str = _fmt(item["delta"], ".4f")
@@ -543,6 +574,7 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     r_str = f"{r_value * 100:.2f}%" if r_value is not None else "N/A"
     iv_value = parse_numeric(item.get("iv"))
     iv_str = f"{iv_value:.2f}%" if iv_value is not None else "N/A"
+    oi_str = format_oi(item.get("open_interest"))
     return (
         f"<b>{item['symbol']}</b><br>"
         f"Экспирация: {label_date} ({days_to_expiry}д)<br>"
@@ -552,6 +584,7 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
         f"<b>{metric_title}: {metric_str}</b><br>"
         f"IV: {iv_str}<br>"
         f"Theta / Mark Price: {theta_pct_str}<br>"
+        f"Open Interest: {oi_str}<br>"
         f"Delta: {delta_str}<br>"
         f"Gamma: {gamma_str}<br>"
         f"Theta: {theta_str}<br>"

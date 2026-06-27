@@ -32,7 +32,12 @@ class NormalizedOption:
         изначально в USDT; OKX не отдаёт mark_price в opt-summary → None,
         доменный слой досчитает его по модели Блэка — Шоулза);
       * ``underlying_price`` — цена базового актива (перпетуала/форварда)
-        для per-option implied rate; ``None`` если биржа не отдаёт.
+        для per-option implied rate; ``None`` если биржа не отдаёт;
+      * ``open_interest`` — открытый интерес, приведённый к количеству единиц
+        базового актива (BTC/ETH/…), а не контрактов: Bybit отдаёт контракты
+        (1 контракт = CONTRACT_SIZE монет) и адаптер умножает; Deribit отдаёт
+        сразу в монетах (контракт = 1 базовой единицы); OKX отдаёт готовое
+        поле ``oiCcy``; Binance не отдаёт OI доступным эндпоинтом → ``None``.
     """
 
     symbol: str
@@ -47,6 +52,7 @@ class NormalizedOption:
     theta: float | None
     vega: float | None
     underlying_price: float | None  # цена базового (перпа/форварда) для implied rate
+    open_interest: float | None = None  # OI в единицах базового актива; None если биржа не отдаёт
 
 
 class DataSource:

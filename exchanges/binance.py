@@ -18,7 +18,10 @@ Spot/index: ``GET /eapi/v1/index?underlying=BTCUSDT`` → ``indexPrice``
   * ``markPrice`` — премия в USDT;
   * forward в bulk нет → underlying_price = None → implied rate r = 0
     (при желании можно использовать riskFreeInterest, но оставляем консистентно
-    с другими биржами без forward).
+    с другими биржами без forward);
+  * open interest: эндпоинт ``GET /eapi/v1/openInterest`` недоступен
+    (HTTP 400/-6010 в окружении запуска), а ``/eapi/v1/mark`` OI не отдаёт →
+    open_interest = None для Binance (метрика OI работает на Bybit/Deribit/OKX).
 
 Symbol: ``BTC-260626-140000-C`` → YYMMDD, целочисленный страйк, C/P.
 """
