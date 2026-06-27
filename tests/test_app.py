@@ -188,6 +188,74 @@ def test_format_oi():
     assert app.format_oi(0.05) == "0.05"
 
 
+def test_aggregate_open_interest_sums_call_plus_put_per_strike():
+    """На каждом страйке OI суммируется по Call+Put в одну точку."""
+    calls = [
+        {"strike": 100, "option_type": "Call", "open_interest": 12.5, "symbol": "C-100"},
+        {"strike": 110, "option_type": "Call", "open_interest": 5.0, "symbol": "C-110"},
+    ]
+    puts = [
+        {"strike": 100, "option_type": "Put", "open_interest": 3.2, "symbol": "P-100"},
+        {"strike": 120, "option_type": "Put", "open_interest": 8.0, "symbol": "P-120"},
+    ]
+    agg = app._aggregate_open_interest_points(calls, puts)
+    # Три страйка с OI (100, 110, 120), отсортированы.
+    assert [a["strike"] for a in agg] == [100, 110, 120]
+    strike100 = next(a for a in agg if a["strike"] == 100)
+    assert strike100["open_interest"] == pytest.approx(15.7)
+    assert strike100["oi_call"] == pytest.approx(12.5)
+    assert strike100["oi_put"] == pytest.approx(3.2)
+    # Страйк, где есть только Call → oi_put остаётся None.
+    strike110 = next(a for a in agg if a["strike"] == 110)
+    assert strike110["oi_call"] == pytest.approx(5.0)
+    assert strike110["oi_put"] is None
+    assert strike110["open_interest"] == pytest.approx(5.0)
+
+
+def test_aggregate_open_interest_skips_none_and_sorts():
+    """Опционы с None OI не дают точки. Результат отсортирован по страйку."""
+    calls = [
+        {"strike": 110, "option_type": "Call", "open_interest": None, "symbol": "C-110"},
+        {"strike": 100, "option_type": "Call", "open_interest": 1.0, "symbol": "C-100"},
+    ]
+    puts = [{"strike": 105, "option_type": "Put", "open_interest": 2.0, "symbol": "P-105"}]
+    agg = app._aggregate_open_interest_points(calls, puts)
+    # C-110 с None пропущен → остаются 100 и 105.
+    assert [a["strike"] for a in agg] == [100, 105]
+
+
+def test_aggregate_open_interest_empty_when_all_none():
+    """Если весь OI None (Binance) — агрегат пустой, точек на графике не будет."""
+    calls = [{"strike": 100, "option_type": "Call", "open_interest": None, "symbol": "C"}]
+    puts = [{"strike": 100, "option_type": "Put", "open_interest": None, "symbol": "P"}]
+    assert app._aggregate_open_interest_points(calls, puts) == []
+
+
+def test_build_oi_hover_text_shows_total_and_split():
+    agg = {
+        "strike": 60000,
+        "open_interest": 15.7,
+        "oi_call": 12.5,
+        "oi_put": 3.2,
+        "symbols": ["BTC-C-60000", "BTC-P-60000"],
+    }
+    text = app.build_oi_hover_text(agg, "28 MAR 2026", 90)
+    assert "60,000" in text
+    assert "Call+Put" in text
+    # Суммарный и разбивка.
+    assert "15.70" in text  # total (format_oi < 1000 → :.2f)
+    assert "Call OI: 12.50" in text
+    assert "Put OI: 3.20" in text
+
+
+def test_build_oi_hover_text_none_side():
+    """Если на страйке только Call (Put нет или его OI=None) — Put OI: N/A."""
+    agg = {"strike": 110, "open_interest": 5.0, "oi_call": 5.0, "oi_put": None, "symbols": ["C-110"]}
+    text = app.build_oi_hover_text(agg, "28 MAR 2026", 90)
+    assert "Put OI: N/A" in text
+    assert "Call OI: 5.00" in text
+
+
 def test_fetch_and_prepare_data_higher_greeks_change_with_rate():
     """Высшие греки должны зависеть от безрисковой ставки, которая выводится
     из underlying_price (implied cost-of-carry)."""
