@@ -11,6 +11,10 @@ OKX отдаёт опционные данные двумя публичными
 
 Spot/index: ``GET /api/v5/market/index-tickers?instId=BTC-USD`` → ``idxPx``.
 
+Open interest: ``GET /api/v5/public/open-interest?instType=OPTION&uly=BTC-USD``
+→ ``oiCcy`` (нативно в единицах базового актива). В opt-summary поля OI НЕТ,
+поэтому OI тянется отдельным эндпоинтом и мёрджится по ``instId``.
+
 Нюансы OKX (см. проверку API):
   * ``markVol`` — decimal fraction (0.448 = 44.8%); нормализация НЕ нужна;
   * значения приходят строками → float();
@@ -70,6 +74,11 @@ def _ms_to_datetime(ms_str):
 _market_cache = {}
 _market_cache_lock = threading.Lock()
 _MARKET_CACHE_TTL = 60
+
+# TTL-кеш открытого интереса по uly. OI в OKX отсутствует в opt-summary и
+# живёт в отдельном эндпоинте /api/v5/public/open-interest.
+_oi_cache = {}
+_oi_cache_lock = threading.Lock()
 
 
 class OkxAdapter(DataSource):
@@ -134,6 +143,34 @@ class OkxAdapter(DataSource):
             return None
         return _to_float(data[0].get("idxPx"))
 
+    def _get_open_interest(self, uly):
+        """Возвращает dict instId → open interest в единицах базового актива.
+
+        OI в OKX отсутствует в opt-summary и отдаётся отдельным эндпоинтом
+        ``/api/v5/public/open-interest``. Поле ``oiCcy`` уже выражено в
+        монетах базового актива (BTC/ETH) — умножение на размер контракта не
+        требуется. При недоступности эндпоинта возвращается пустой dict
+        (тогда open_interest опционов останется None — не падает).
+        """
+        now_ts = time.time()
+        with _oi_cache_lock:
+            cached = _oi_cache.get(uly)
+            if cached and (now_ts - cached["ts"]) < _MARKET_CACHE_TTL:
+                return cached["oi"]
+
+        url = f"{OKX_BASE_URL}/api/v5/public/open-interest"
+        params = {"instType": "OPTION", "uly": uly}
+        try:
+            payload = net.get_json(url, params=params)
+        except (requests.RequestException, ValueError):
+            return {}
+        data = payload.get("data") or []
+        oi = {rec.get("instId"): _to_float(rec.get("oiCcy")) for rec in data if rec.get("instId")}
+
+        with _oi_cache_lock:
+            _oi_cache[uly] = {"ts": now_ts, "oi": oi}
+        return oi
+
     def fetch(self, coin):
         config = COIN_ALIASES.get(coin)
         if config is None:
@@ -141,6 +178,7 @@ class OkxAdapter(DataSource):
 
         uly = config["uly"]
         summary_by_id, instruments_by_id = self._get_market(uly)
+        oi_by_id = self._get_open_interest(uly)
 
         options: list[NormalizedOption] = []
         for inst_id, summ in summary_by_id.items():
@@ -170,6 +208,8 @@ class OkxAdapter(DataSource):
             mark_iv = _to_float(summ.get("markVol"))
             # fwdPx — forward per-maturity для implied rate.
             forward_price = _to_float(summ.get("fwdPx"))
+            # oiCcy из отдельного OI-эндпоинта — уже в единицах базового актива.
+            open_interest = oi_by_id.get(inst_id)
 
             options.append(
                 NormalizedOption(
@@ -185,6 +225,7 @@ class OkxAdapter(DataSource):
                     theta=None,
                     vega=None,
                     underlying_price=forward_price,
+                    open_interest=open_interest,
                 )
             )
 

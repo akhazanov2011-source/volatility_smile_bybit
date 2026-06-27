@@ -169,6 +169,20 @@ SUPPORTED_METRICS = {
             "весьма далёкими от денег опционами (wing options)."
         ),
     },
+    "open_interest": {
+        "label": "Open Interest",
+        "axis_title": "Open Interest (coins)",
+        "value_key": "open_interest",
+        "source": "api",
+        "description": (
+            "Открытый интерес — число открытых позиций по опциону, приведённое к "
+            "единицам базового актива (BTC/ETH/…). Берётся напрямую из API биржи: "
+            "Bybit отдаёт контракты (умножаем на размер контракта), Deribit — "
+            "сразу в монетах, OKX — поле oiCcy. Binance не отдаёт OI доступным "
+            "эндпоинтом → для неё значение недоступно. Показывает, где реально "
+            "сосредоточены позиции рынка, независимо от цены опциона."
+        ),
+    },
 }
 DEFAULT_METRIC = "iv"
 
@@ -337,6 +351,7 @@ def fetch_and_prepare_data(options, min_strike, max_strike, spot_price):
                 "speed": speed_val,
                 "charm": charm_val,
                 "ultima": ultima_val,
+                "open_interest": opt.open_interest,
                 "risk_free_rate": risk_free_rate,
                 "symbol": opt.symbol,
                 "is_otm": (
@@ -397,6 +412,33 @@ def build_figure(
 
         calls = sorted(by_expiry[expiry]["Call"], key=lambda item: item["strike"])
         puts = sorted(by_expiry[expiry]["Put"], key=lambda item: item["strike"])
+
+        if selected_metric == "open_interest":
+            # OI агрегируется Call+Put в одну точку на страйк; в тултипе —
+            # суммарный OI и разбивка по Call/Put.
+            oi_points = _aggregate_open_interest_points(calls, puts)
+            if not oi_points:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=[p["strike"] for p in oi_points],
+                    y=[p["open_interest"] for p in oi_points],
+                    mode="lines+markers",
+                    name=f"{label_date} ({days_to_expiry}д)",
+                    legendgroup=legend_group,
+                    legendgrouptitle_text=label_date,
+                    showlegend=True,
+                    line=dict(color=color, width=2, dash="solid"),
+                    marker=dict(size=7, symbol="circle", line=dict(width=2, color="#ffffff")),
+                    hovertext=[
+                        build_oi_hover_text(p, label_date, days_to_expiry)
+                        for p in oi_points
+                    ],
+                    hoverinfo="text",
+                )
+            )
+            continue
+
         smile_points = sorted(calls + puts, key=lambda item: item["strike"])
         if selected_metric == "mark_price":
             smile_points = [item for item in smile_points if item["is_otm"]]
@@ -528,6 +570,73 @@ def _fmt(value, fmt):
     return f"{num:{fmt}}"
 
 
+def format_oi(value):
+    """Компактный формат открытого интереса в монетах базового актива.
+
+    Группирует разряды и обрезает хвост: ``1234.5`` → ``1 234.5``, ``0.05`` →
+    ``0.050``. None/недоступно → 'N/A'. Используется в тултипе точки.
+    """
+    num = parse_numeric(value)
+    if num is None:
+        return "N/A"
+    if abs(num) >= 1000:
+        return f"{num:,.1f}"
+    if abs(num) >= 1:
+        return f"{num:,.2f}"
+    return f"{num:.4g}"
+
+
+def _aggregate_open_interest_points(calls, puts):
+    """Суммирует открытый интерес Call + Put в одну точку на страйк.
+
+    Возвращает список агрегатов, отсортированных по страйку:
+      ``{strike, open_interest (total), oi_call, oi_put, symbols}``
+    Страйки, у которых OI равен None у всех опционов, пропускаются
+    (нет данных — нет точки). None у одной из сторон остаётся None (биржа
+    не отдаёт OI по этому типу), но total всё равно считается по тем, что есть.
+    """
+    by_strike = {}
+    for item in calls + puts:
+        oi = parse_numeric(item.get("open_interest"))
+        if oi is None:
+            continue
+        strike = item["strike"]
+        agg = by_strike.get(strike)
+        if agg is None:
+            agg = {
+                "strike": strike,
+                "open_interest": 0.0,
+                "oi_call": None,
+                "oi_put": None,
+                "symbols": [],
+            }
+            by_strike[strike] = agg
+        agg["open_interest"] += oi
+        if item["option_type"] == "Call":
+            agg["oi_call"] = (agg["oi_call"] or 0.0) + oi
+        else:
+            agg["oi_put"] = (agg["oi_put"] or 0.0) + oi
+        if item.get("symbol"):
+            agg["symbols"].append(item["symbol"])
+    return sorted(by_strike.values(), key=lambda p: p["strike"])
+
+
+def build_oi_hover_text(agg, label_date, days_to_expiry):
+    """Тултип агрегированной OI-точки: суммарный OI + разбивка Call/Put."""
+    total = format_oi(agg.get("open_interest"))
+    call_oi = format_oi(agg.get("oi_call"))
+    put_oi = format_oi(agg.get("oi_put"))
+    symbols = ", ".join(agg.get("symbols", [])) or "—"
+    return (
+        f"<b>Страйк: {format_strike(agg['strike'])}</b><br>"
+        f"Экспирация: {label_date} ({days_to_expiry}д)<br>"
+        f"<b>Open Interest (Call+Put): {total}</b><br>"
+        f"Call OI: {call_oi}<br>"
+        f"Put OI: {put_oi}<br>"
+        f"Инструменты: {symbols}"
+    )
+
+
 def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     option_type = item.get("option_type", "Call")
     delta_str = _fmt(item["delta"], ".4f")
@@ -543,6 +652,7 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
     r_str = f"{r_value * 100:.2f}%" if r_value is not None else "N/A"
     iv_value = parse_numeric(item.get("iv"))
     iv_str = f"{iv_value:.2f}%" if iv_value is not None else "N/A"
+    oi_str = format_oi(item.get("open_interest"))
     return (
         f"<b>{item['symbol']}</b><br>"
         f"Экспирация: {label_date} ({days_to_expiry}д)<br>"
@@ -552,6 +662,7 @@ def build_hover_text(item, label_date, days_to_expiry, selected_metric):
         f"<b>{metric_title}: {metric_str}</b><br>"
         f"IV: {iv_str}<br>"
         f"Theta / Mark Price: {theta_pct_str}<br>"
+        f"Open Interest: {oi_str}<br>"
         f"Delta: {delta_str}<br>"
         f"Gamma: {gamma_str}<br>"
         f"Theta: {theta_str}<br>"

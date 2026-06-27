@@ -37,6 +37,19 @@ COIN_ALIASES = {
     "XAUTUSDT": {"api_base_coin": "XAUT", "symbol_prefixes": {"XAUT", "XAUTUSDT"}},
 }
 
+#: Размер одного опционного контракта в единицах базового актива. Bybit
+#: отдаёт openInterest числом контрактов; для перевода в монеты умножаем.
+#: Источник: спецификация опционов Bybit V5 (1 лот BTC-option = 0.01 BTC;
+#: ETH = 0.1; SOL = 1; XRP = 100; DOGE = 1000; XAUT = 0.01 тр.унции).
+CONTRACT_SIZE = {
+    "BTC": 0.01,
+    "ETH": 0.1,
+    "SOL": 1.0,
+    "XRP": 100.0,
+    "DOGE": 1000.0,
+    "XAUTUSDT": 0.01,
+}
+
 _SYMBOL_RE = re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{2})-(\d+(?:\.\d+)?)-([CP])-(?:[A-Z]+)$")
 
 
@@ -160,6 +173,16 @@ class BybitAdapter(DataSource):
             if spot_price is None and index_price is not None:
                 spot_price = index_price
 
+            # Open interest: Bybit отдаёт числом контрактов (openInterest);
+            # приводим к единицам базового актива через CONTRACT_SIZE.
+            oi_contracts = _to_float(ticker.get("openInterest"))
+            contract_size = CONTRACT_SIZE.get(coin)
+            open_interest = (
+                oi_contracts * contract_size
+                if oi_contracts is not None and contract_size is not None
+                else None
+            )
+
             options.append(
                 NormalizedOption(
                     symbol=symbol,
@@ -177,6 +200,7 @@ class BybitAdapter(DataSource):
                     theta=_to_float(ticker.get("theta")),
                     vega=_to_float(ticker.get("vega")),
                     underlying_price=_to_float(ticker.get("underlyingPrice")),
+                    open_interest=open_interest,
                 )
             )
 

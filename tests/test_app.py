@@ -31,7 +31,7 @@ from exchanges import NormalizedOption
 def _make_option(symbol, base_coin="BTC", strike=60000.0, option_type="Call",
                  mark_iv=0.6, mark_price=1000.0, delta=0.55, gamma=0.00002,
                  theta=-5.0, vega=20.0, underlying_price=60000.0,
-                 expiry=None):
+                 open_interest=None, expiry=None):
     """Конструктор нормализованного опциона для тестов.
 
     По умолчанию это Call на BTC, экспирация ~90 дней, IV=0.6 (как Bybit
@@ -52,6 +52,7 @@ def _make_option(symbol, base_coin="BTC", strike=60000.0, option_type="Call",
         theta=theta,
         vega=vega,
         underlying_price=underlying_price,
+        open_interest=open_interest,
     )
 
 
@@ -81,7 +82,7 @@ def _make_mock_options(base_coin="BTC", strike=60000.0, underlying_price=60000.0
 # --------------------------------------------------------------------------------------
 
 def test_normalize_metric_accepts_new_greeks():
-    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima"):
+    for key in ("delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "open_interest"):
         assert app.normalize_metric(key) == key
 
 
@@ -121,7 +122,7 @@ def test_all_metrics_have_required_fields():
 
 
 def test_expected_metric_keys_present():
-    expected = {"iv", "theta", "theta_pct", "mark_price", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima"}
+    expected = {"iv", "theta", "theta_pct", "mark_price", "delta", "vega", "vanna", "volga", "speed", "charm", "ultima", "open_interest"}
     assert expected == set(app.SUPPORTED_METRICS.keys())
 
 
@@ -149,9 +150,110 @@ def test_fetch_and_prepare_data_returns_higher_greeks():
         for key in ("vanna", "volga", "speed", "charm", "ultima"):
             assert key in item, f"Ключ {key} отсутствует в item"
             assert item[key] is not None, f"{key} не должен быть None для валидного опциона"
+        # Ключ open_interest обязан присутствовать в точке (None если биржа не отдаёт).
+        assert "open_interest" in item
         # implied rate = ln(underlying/spot)/T; при F=S → r=0
         assert item["risk_free_rate"] == 0.0
         assert item["mark_price"] == 1000.0
+
+
+def test_fetch_and_prepare_data_propagates_open_interest():
+    """open_interest из NormalizedOption прокидывается в точку как есть
+    (уже нормализован адаптером в единицы базового актива)."""
+    # Общая экспирация, чтобы Call/Put попали в один бакет улыбки.
+    expiry = datetime.now() + timedelta(days=90)
+    options = [
+        _make_option("BTC-C-60000", option_type="Call", open_interest=12.5, expiry=expiry),
+        _make_option("BTC-P-60000", option_type="Put", open_interest=3.2, expiry=expiry),
+    ]
+    spot = 60000.0
+    _, by_expiry, sorted_expiries = app.fetch_and_prepare_data(
+        options, 59000.0, 61000.0, spot
+    )
+    expiry_key = sorted_expiries[0]
+    call = by_expiry[expiry_key]["Call"][0]
+    put = by_expiry[expiry_key]["Put"][0]
+    assert call["open_interest"] == pytest.approx(12.5)
+    assert put["open_interest"] == pytest.approx(3.2)
+
+
+def test_format_oi():
+    assert app.format_oi(None) == "N/A"
+    assert app.format_oi("") == "N/A"
+    # Большие значения — группировка разрядов.
+    assert app.format_oi(1234.5) == "1,234.5"
+    # Средние — два знака.
+    assert app.format_oi(42.0) == "42.00"
+    # Малые (< 1) — :.4g.
+    assert app.format_oi(0.05) == "0.05"
+
+
+def test_aggregate_open_interest_sums_call_plus_put_per_strike():
+    """На каждом страйке OI суммируется по Call+Put в одну точку."""
+    calls = [
+        {"strike": 100, "option_type": "Call", "open_interest": 12.5, "symbol": "C-100"},
+        {"strike": 110, "option_type": "Call", "open_interest": 5.0, "symbol": "C-110"},
+    ]
+    puts = [
+        {"strike": 100, "option_type": "Put", "open_interest": 3.2, "symbol": "P-100"},
+        {"strike": 120, "option_type": "Put", "open_interest": 8.0, "symbol": "P-120"},
+    ]
+    agg = app._aggregate_open_interest_points(calls, puts)
+    # Три страйка с OI (100, 110, 120), отсортированы.
+    assert [a["strike"] for a in agg] == [100, 110, 120]
+    strike100 = next(a for a in agg if a["strike"] == 100)
+    assert strike100["open_interest"] == pytest.approx(15.7)
+    assert strike100["oi_call"] == pytest.approx(12.5)
+    assert strike100["oi_put"] == pytest.approx(3.2)
+    # Страйк, где есть только Call → oi_put остаётся None.
+    strike110 = next(a for a in agg if a["strike"] == 110)
+    assert strike110["oi_call"] == pytest.approx(5.0)
+    assert strike110["oi_put"] is None
+    assert strike110["open_interest"] == pytest.approx(5.0)
+
+
+def test_aggregate_open_interest_skips_none_and_sorts():
+    """Опционы с None OI не дают точки. Результат отсортирован по страйку."""
+    calls = [
+        {"strike": 110, "option_type": "Call", "open_interest": None, "symbol": "C-110"},
+        {"strike": 100, "option_type": "Call", "open_interest": 1.0, "symbol": "C-100"},
+    ]
+    puts = [{"strike": 105, "option_type": "Put", "open_interest": 2.0, "symbol": "P-105"}]
+    agg = app._aggregate_open_interest_points(calls, puts)
+    # C-110 с None пропущен → остаются 100 и 105.
+    assert [a["strike"] for a in agg] == [100, 105]
+
+
+def test_aggregate_open_interest_empty_when_all_none():
+    """Если весь OI None (Binance) — агрегат пустой, точек на графике не будет."""
+    calls = [{"strike": 100, "option_type": "Call", "open_interest": None, "symbol": "C"}]
+    puts = [{"strike": 100, "option_type": "Put", "open_interest": None, "symbol": "P"}]
+    assert app._aggregate_open_interest_points(calls, puts) == []
+
+
+def test_build_oi_hover_text_shows_total_and_split():
+    agg = {
+        "strike": 60000,
+        "open_interest": 15.7,
+        "oi_call": 12.5,
+        "oi_put": 3.2,
+        "symbols": ["BTC-C-60000", "BTC-P-60000"],
+    }
+    text = app.build_oi_hover_text(agg, "28 MAR 2026", 90)
+    assert "60,000" in text
+    assert "Call+Put" in text
+    # Суммарный и разбивка.
+    assert "15.70" in text  # total (format_oi < 1000 → :.2f)
+    assert "Call OI: 12.50" in text
+    assert "Put OI: 3.20" in text
+
+
+def test_build_oi_hover_text_none_side():
+    """Если на страйке только Call (Put нет или его OI=None) — Put OI: N/A."""
+    agg = {"strike": 110, "open_interest": 5.0, "oi_call": 5.0, "oi_put": None, "symbols": ["C-110"]}
+    text = app.build_oi_hover_text(agg, "28 MAR 2026", 90)
+    assert "Put OI: N/A" in text
+    assert "Call OI: 5.00" in text
 
 
 def test_fetch_and_prepare_data_higher_greeks_change_with_rate():
